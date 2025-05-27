@@ -1,17 +1,15 @@
 #include <jvmti.h>
 #include <iostream>
-
-#include "MethodTraceAgent.h"
+#include <string.h>
 
 using namespace std;
-
 
 static jvmtiEnv *jvmti = nullptr; // 全局JVMTI环境指针
 static bool agent_onloaded = false; // 全局标记
 static bool agent_unloaded = false; // 全局标记
 
 // 方法进入事件回调
-void JNICALL MethodEntry(jvmtiEnv *env, JNIEnv *jni_env, jthread thread, jmethodID method) {
+void JNICALL MethodEntry(jvmtiEnv *env, JNIEnv *jni_env, jthread thread, const jmethodID method) {
     char *method_name = nullptr;
     char *class_signature = nullptr;
     jclass declaring_class;
@@ -37,34 +35,24 @@ void JNICALL MethodEntry(jvmtiEnv *env, JNIEnv *jni_env, jthread thread, jmethod
 
 // ClassFileLoadHook 回调函数
 void JNICALL ClassFileLoadHook(
-    jvmtiEnv* jvmti_env,
-    JNIEnv* jni_env,
+    jvmtiEnv *jvmti_env,
+    JNIEnv *jni_env,
     jclass class_being_redefined,
     jobject loader,
-    const char* name,
+    const char *name,
     jobject protection_domain,
     jint class_data_len,
-    const unsigned char* class_data,
-    jint* new_class_data_len,
-    unsigned char** new_class_data
+    const unsigned char *class_data,
+    jint *new_class_data_len,
+    unsigned char **new_class_data
 ) {
-
 }
 
 // 代理初始化函数
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
     if (agent_onloaded) { return JNI_OK; }
     cout << "Agent_OnLoad(" << vm << ")" << endl;
-    // try{
-    //     auto* agent = new MethodTraceAgent();
-    //     agent->Init(vm);
-    //     agent->ParseOptions(options);
-    //     agent->AddCapability();
-    //     agent->RegisterEvent();
-    // } catch (AgentException& e) {
-    //     cout << "Error when enter HandleMethodEntry: " << e.what() << " [" << e.ErrCode() << "]";
-    //     return JNI_ERR;
-    // }
+
     // 获取JVMTI环境
     jint result = vm->GetEnv(reinterpret_cast<void **>(&jvmti), JVMTI_VERSION_1_2);
     if (result != JNI_OK) {
@@ -107,14 +95,14 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
 JNIEXPORT jint JNICALL
 Agent_OnAttach(JavaVM *vm, char *options, void *reserved) {
     cout << "Agent_OnAttach(" << vm << ")" << endl;
-    jvmtiEnv* jvmti = nullptr;
+    jvmtiEnv *jvmti = nullptr;
     const jint result = vm->GetEnv(reinterpret_cast<void **>(&jvmti), JVMTI_VERSION_1_1);
     if (result != JNI_OK) {
         printf("ERROR: Unable to access JVMTI!\n");
         return JNI_ERR;
     }
     auto err = static_cast<jvmtiError>(0);
-    jclass* classes;
+    jclass *classes;
     jint count;
 
     err = jvmti->GetLoadedClasses(&count, &classes);
@@ -122,7 +110,7 @@ Agent_OnAttach(JavaVM *vm, char *options, void *reserved) {
         printf("ERROR: JVMTI GetLoadedClasses failed!\n");
     }
     for (int i = 0; i < count; i++) {
-        char* sig;
+        char *sig;
         jvmti->GetClassSignature(classes[i], &sig, nullptr);
         printf("cls sig=%s\n", sig);
     }
