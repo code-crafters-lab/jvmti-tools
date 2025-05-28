@@ -8,6 +8,13 @@ static jvmtiEnv *jvmti = nullptr; // 全局JVMTI环境指针
 static bool agent_onloaded = false; // 全局标记
 static bool agent_unloaded = false; // 全局标记
 
+bool startsWith(const std::string& str, const std::string& prefix) {
+    if (str.length() < prefix.length()) {
+        return false;
+    }
+    return str.substr(0, prefix.length()) == prefix;
+}
+
 // 方法进入事件回调
 void JNICALL MethodEntry(jvmtiEnv *env, JNIEnv *jni_env, jthread thread, const jmethodID method) {
     char *method_name = nullptr;
@@ -20,7 +27,7 @@ void JNICALL MethodEntry(jvmtiEnv *env, JNIEnv *jni_env, jthread thread, const j
     // 获取类签名
     env->GetClassSignature(declaring_class, &class_signature, nullptr);
 
-    if (strcmp(class_signature, "Lorg/example/TestApp;") == 0) {
+    if (strcmp(class_signature, "Lorg/example/TestApp;") == 0 || startsWith(class_signature, "Lcom/grapecity")) {
         // 获取方法名称
         env->GetMethodName(method, &method_name, nullptr, nullptr);
 
