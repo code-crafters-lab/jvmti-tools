@@ -7,7 +7,7 @@ math(EXPR POINTER_SIZE_BITS "${CMAKE_SIZEOF_VOID_P} * 8")
 message(STATUS "系统: ${CMAKE_SYSTEM} 位数: ${POINTER_SIZE_BITS} 位 处理器架构: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
 
 set(CMAKE_CXX_STANDARD 11)
-set(JVMTI_TOOLS_LIB_NAME agent-tools)
+set(JVMTI_TOOLS_LIB_NAME agent)
 
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "ON" FORCE)
 
@@ -44,7 +44,7 @@ message(STATUS ${JVMTI_TOOLS_LIB_NAME})
 # 根据系统类型设置编译选项
 if (WIN32)
     # Windows 平台设置
-#    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
+    #    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
     set(CMAKE_SHARED_LIBRARY_PREFIX "")  # 移除 lib 前缀
     set(CMAKE_SHARED_LIBRARY_SUFFIX ".dll")
 
@@ -58,24 +58,24 @@ if (WIN32)
     endif ()
 elseif (UNIX)
     # Linux/macOS 平台设置
-#    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+    #    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
     set(CMAKE_SHARED_LIBRARY_PREFIX "")  # 移除 lib 前缀
 endif ()
 
 # 添加源文件
-add_library(${JVMTI_TOOLS_LIB_NAME} SHARED
-        src/agent.cpp
-)
+add_library(${JVMTI_TOOLS_LIB_NAME} SHARED src/agent.cpp)
+
+add_library(data-guard SHARED src/DataGuard.h src/DataGuard.cpp)
 
 # 链接必要的库（Linux/macOS需要）
 # todo 需要用到再使用
 if (UNIX AND NOT APPLE)
-#    target_link_libraries(${JVMTI_TOOLS_LIB_NAME} ${JAVA_HOME}/lib/server/libjvm.so)
+    #    target_link_libraries(${JVMTI_TOOLS_LIB_NAME} ${JAVA_HOME}/lib/server/libjvm.so)
 elseif (APPLE)
-#    target_link_libraries(${JVMTI_TOOLS_LIB_NAME} ${JAVA_HOME}/lib/server/libjvm.dylib)
+    #    target_link_libraries(${JVMTI_TOOLS_LIB_NAME} ${JAVA_HOME}/lib/server/libjvm.dylib)
 elseif (WIN32)
-#    target_link_libraries(${JVMTI_TOOLS_LIB_NAME} ${JAVA_HOME}/lib/jvm.lib)
+    #    target_link_libraries(${JVMTI_TOOLS_LIB_NAME} ${JAVA_HOME}/lib/jvm.lib)
 endif ()
 
 # 设置输出目录和库名称和版本
@@ -84,7 +84,7 @@ set_target_properties(${JVMTI_TOOLS_LIB_NAME} PROPERTIES
 )
 
 # 可选：指定安装路径
-#set(CMAKE_INSTALL_PREFIX "~/test")
+set(CMAKE_INSTALL_PREFIX "dist")
 message(STATUS "安装目录前缀 ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "可执行文件目录 ${CMAKE_INSTALL_BINDIR}")
 message(STATUS "库文件目录 ${CMAKE_INSTALL_LIBDIR}")
@@ -92,8 +92,8 @@ message(STATUS "头文件目录 ${CMAKE_INSTALL_INCLUDEDIR}")
 message(STATUS "数据文件目录 ${CMAKE_INSTALL_DATAROOM}")
 message(STATUS "配置文件目录 ${CMAKE_INSTALL_SYSCONFDIR}")
 
-install(TARGETS ${JVMTI_TOOLS_LIB_NAME}
+install(TARGETS ${JVMTI_TOOLS_LIB_NAME} data-guard
         LIBRARY DESTINATION lib  # 共享库安装到 lib 目录
-        ARCHIVE DESTINATION lib  # 静态库安装到 lib 目录（如果同时生成）
+#        ARCHIVE DESTINATION lib  # 静态库安装到 lib 目录（如果同时生成）
         RUNTIME DESTINATION bin  # 可执行文件安装到 bin 目录
 )
