@@ -32,15 +32,12 @@ else ()
     message(FATAL_ERROR "不支持的操作系统")
 endif ()
 
-message(STATUS "Current platform is ${PLATFORM}")
-
-# 添加JVMTI头文件
+# 根据平台添加 JVMTI 头文件
 include_directories(
         ${JAVA_HOME}/include
         ${JAVA_HOME}/include/${PLATFORM}  # 根据平台选择：linux/win32/darwin
 )
 
-message(STATUS ${JVMTI_TOOLS_LIB_NAME})
 # 根据系统类型设置编译选项
 if (WIN32)
     # Windows 平台设置
@@ -50,10 +47,10 @@ if (WIN32)
 
     # 根据位数设置
     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-        message("配置 64 位 DLL")
+        message(STATUS "配置 64 位 DLL")
         add_definitions(-D_WIN64)
     else ()
-        message("配置 32 位 DLL")
+        message(STATUS "配置 32 位 DLL")
         add_definitions(-D_WIN32)
     endif ()
 elseif (UNIX)
@@ -65,11 +62,25 @@ endif ()
 
 # 添加源文件
 add_library(${JVMTI_TOOLS_LIB_NAME} SHARED src/agent.cpp)
-
 add_library(data-guard SHARED src/DataGuard.h src/DataGuard.cpp)
 
-# 链接必要的库（Linux/macOS需要）
-# todo 需要用到再使用
+# 查找 JVM 库文件，对于 Windows，通常在 JDK 的 lib 目录或 lib/server 目录下
+set(JVM_LIB_PATH "${JAVA_HOME}/lib" CACHE PATH "JVM 库路径")
+find_library(JVM_LIBRARY
+        NAMES jvm
+        PATHS ${JVM_LIB_PATH} ${JVM_LIB_PATH}/server
+        NO_DEFAULT_PATH
+)
+
+if (JVM_LIBRARY)
+    message(STATUS "找到 JVM 库: ${JVM_LIBRARY}")
+    # 链接 JVM 库
+#    target_link_libraries(${JVMTI_TOOLS_LIB_NAME} ${JVM_LIBRARY})
+else ()
+    message(FATAL_ERROR "未找到 JVM 库文件，请检查 JDK 路径和 JVM_LIB_PATH 设置")
+endif ()
+
+
 if (UNIX AND NOT APPLE)
     #    target_link_libraries(${JVMTI_TOOLS_LIB_NAME} ${JAVA_HOME}/lib/server/libjvm.so)
 elseif (APPLE)
@@ -79,12 +90,18 @@ elseif (WIN32)
 endif ()
 
 # 设置输出目录和库名称和版本
-set_target_properties(${JVMTI_TOOLS_LIB_NAME} PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
-)
+#set_target_properties(${JVMTI_TOOLS_LIB_NAME} PROPERTIES
+#        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+#)
 
-# 可选：指定安装路径
-set(CMAKE_INSTALL_PREFIX "dist")
+# 配置安装路径前缀（可选）
+if (WIN32)
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/install")
+#    set(CMAKE_INSTALL_PREFIX "${JAVA_HOME}")
+else ()
+    set(CMAKE_INSTALL_PREFIX "/usr/local")
+endif ()
+
 message(STATUS "安装目录前缀 ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "可执行文件目录 ${CMAKE_INSTALL_BINDIR}")
 message(STATUS "库文件目录 ${CMAKE_INSTALL_LIBDIR}")
@@ -93,7 +110,9 @@ message(STATUS "数据文件目录 ${CMAKE_INSTALL_DATAROOM}")
 message(STATUS "配置文件目录 ${CMAKE_INSTALL_SYSCONFDIR}")
 
 install(TARGETS ${JVMTI_TOOLS_LIB_NAME} data-guard
-        LIBRARY DESTINATION lib  # 共享库安装到 lib 目录
-#        ARCHIVE DESTINATION lib  # 静态库安装到 lib 目录（如果同时生成）
-        RUNTIME DESTINATION bin  # 可执行文件安装到 bin 目录
+        LIBRARY DESTINATION lib  # 动态库安装路径（Linux/macOS）
+        #        ARCHIVE DESTINATION lib  # 静态库安装路径（Linux/macOS）（如果同时生成）
+        RUNTIME DESTINATION bin  # 可执行文件或 DLL 安装路径（Windows）
 )
+
+#install(TARGETS data-guard LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
