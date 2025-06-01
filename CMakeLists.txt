@@ -48,12 +48,14 @@ if (WIN32)
     # 根据位数设置
     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
         message(STATUS "配置 64 位 DLL")
-        add_definitions(-D_WIN64)
+#        add_definitions(-D_WIN64)
+#        add_definitions(-DARCH_64BIT)
     else ()
         message(STATUS "配置 32 位 DLL")
-        add_definitions(-D_WIN32)
+#        add_definitions(-D_WIN32)
+#        add_definitions(-DARCH_32BIT)
     endif ()
-elseif (UNIX)
+  elseif (UNIX)
     # Linux/macOS 平台设置
     #    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
@@ -116,3 +118,9 @@ install(TARGETS ${JVMTI_TOOLS_LIB_NAME} data-guard
 )
 
 #install(TARGETS data-guard LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+
+# 添加自定义清理目标
+add_custom_target(clean_install
+        COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_INSTALL_PREFIX}
+        COMMENT "清理安装目录"
+)

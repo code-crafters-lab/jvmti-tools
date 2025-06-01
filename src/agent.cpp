@@ -237,14 +237,14 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
         std::cerr << "设置 JVMTI 功能失败" << std::endl;
         return JNI_ERR;
     }
-
-    // 注册事件回调
-    jvmtiEventCallbacks callbacks = {};
-    callbacks.MethodEntry = &method_entry_callback;
-    callbacks.ClassFileLoadHook = &class_file_load_hook_callback;
-    callbacks.NativeMethodBind = &native_method_bind_callback;
-
     try {
+        // 注册事件回调
+        jvmtiEventCallbacks callbacks = {};
+        callbacks.MethodEntry = &method_entry_callback;
+        callbacks.ClassFileLoadHook = &class_file_load_hook_callback;
+        callbacks.NativeMethodBind = &native_method_bind_callback;
+
+
         // 注册事件回调
         jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
         // 启用方法进入事件
