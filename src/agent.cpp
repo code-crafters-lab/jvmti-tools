@@ -6,6 +6,9 @@
 #include <Windows.h>
 #endif
 // JVM TI代理中初始化spdlog
+#include <spdlog/async.h>
+#include <spdlog/async_logger.h>
+
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/rotating_file_sink.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
@@ -257,6 +260,8 @@ JNIEnv *getJNIEnv(JavaVM *vm) {
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
     // 设置控制台输出为 UTF-8 编码
     // SetConsoleOutputCP(65001);
+    initJvmtiLogger();
+
     if (agent_onloaded) { return JNI_OK; }
     cout << "Agent_OnLoad(" << vm << ")" << endl;
 

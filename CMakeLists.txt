@@ -8,7 +8,6 @@ project(jvmti-tools VERSION 1.0 LANGUAGES CXX)
 # ----------------------
 # cmake 默认配置
 # ----------------------
-
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_FETCHCONTENT_QUIET OFF CACHE BOOL "FetchContent QUIET")
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "ON" FORCE)
@@ -82,7 +81,7 @@ if (JAVA_HOME)
     )
     if (JVM_LIBRARY AND JVMTI_TOOLS_LINK_JVM_LIBRARY)
         # 根据配置是否链接 JVM 库,默认不链接
-#        target_link_libraries(${JVMTI_TOOLS_LIB_NAME} PUBLIC ${JVM_LIBRARY})
+        #        target_link_libraries(${JVMTI_TOOLS_LIB_NAME} PUBLIC ${JVM_LIBRARY})
     endif ()
 elseif ()
     message(FATAL_ERROR "未设置 JAVA_HOME 环境变量")
@@ -95,7 +94,6 @@ elseif (APPLE)
     set(PLATFORM "darwin")
 elseif (WIN32)
     set(PLATFORM "win32")
-    target_compile_definitions(${JVMTI_TOOLS_LIB_NAME} PRIVATE _WIN32)
 else ()
     message(FATAL_ERROR "不支持的操作系统")
 endif ()
@@ -106,11 +104,15 @@ include_directories(
         ${JAVA_HOME}/include/${PLATFORM}  # 根据平台选择：linux/win32/darwin
 )
 
+if (JVMTI_TOOLS_ENABLE_LOG)
+    include_directories(${spdlog_SOURCE_DIR}/include)
+endif ()
+
 # 根据系统类型设置编译选项
 if (WIN32)
     # Windows 平台设置
     #    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
-
+    set(CMAKE_SHARED_LIBRARY_PREFIX "")  # 移除 lib 前缀
     # 根据位数设置
     if (CMAKE_SIZEOF_VOID_P EQUAL 8)
         message(STATUS "配置 64 位 DLL")
@@ -131,11 +133,14 @@ endif ()
 add_library(${JVMTI_TOOLS_LIB_NAME} SHARED src/agent.cpp)
 add_library(data-guard SHARED src/DataGuard.h src/DataGuard.cpp)
 
+if (WIN32)
+    target_compile_definitions(${JVMTI_TOOLS_LIB_NAME} PRIVATE _WIN32)
+endif ()
 #target_link_libraries(${JVMTI_TOOLS_LIB_NAME} PRIVATE spdlog::spdlog)
 
 # 配置安装路径前缀（可选）
 if (WIN32)
-    set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/install")
+    set(CMAKE_INSTALL_PREFIX "${PROJECT_SOURCE_DIR}/install")
 else ()
     set(CMAKE_INSTALL_PREFIX "${PROJECT_SOURCE_DIR}/install")
 endif ()
@@ -157,6 +162,10 @@ if (APPLE)
     install(TARGETS ${JVMTI_TOOLS_LIB_NAME} data-guard
             #            LIBRARY DESTINATION ${JAVA_HOME}/lib
             LIBRARY DESTINATION /Users/wuyujie/Project/opensource/jvmti-demo
+    )
+else ()
+    install(TARGETS ${JVMTI_TOOLS_LIB_NAME} data-guard
+            LIBRARY DESTINATION D:/project/open-source/jvmti-demo
     )
 endif ()
 
