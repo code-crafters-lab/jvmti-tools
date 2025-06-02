@@ -2,7 +2,14 @@
 #include <iostream>
 #include <cstring>
 #include <classfile_constants.h>
+#ifdef _WIN32
 #include <Windows.h>
+#endif
+// JVM TI代理中初始化spdlog
+#include "spdlog/spdlog.h"
+#include "spdlog/sinks/rotating_file_sink.h"
+#include "spdlog/sinks/stdout_color_sinks.h"
+
 using namespace std;
 
 static jvmtiEnv *jvmti = nullptr; // 全局JVMTI环境指针
@@ -15,6 +22,44 @@ bool startsWith(const std::string &str, const std::string &prefix) {
         return false;
     }
     return str.substr(0, prefix.length()) == prefix;
+}
+
+
+// JVM TI代理初始化时调用
+void initJvmtiLogger() {
+    try {
+        // 异步文件日志（按大小切割，最多保留3个备份）
+        auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
+            "jvmti_agent.log", 10 * 1024 * 1024, 3);
+
+        // 控制台彩色日志（调试时用）
+        auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+
+        // 组合多个sink
+        std::vector<spdlog::sink_ptr> sinks{file_sink, console_sink};
+
+        // 创建异步日志器（队列大小8192，刷新线程优先级可调整）
+        auto logger = std::make_shared<spdlog::async_logger>(
+            "jvmti_agent", sinks.begin(), sinks.end(),
+            spdlog::thread_pool(), spdlog::async_overflow_policy::block);
+
+        // 设置日志格式（包含时间、线程ID、日志级别、JVM相关信息）
+        logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [thread %t] [level %l] "
+                           "[jvm pid %P] [class %v] %message");
+
+        // 设置日志级别（代理开发时用debug，生产环境用info）
+        logger->set_level(spdlog::level::debug);
+        logger->flush_on(spdlog::level::warn);  // 警告及以上级别立即刷新
+
+        // 注册为全局日志器
+        spdlog::register_logger(logger);
+        spdlog::set_default_logger(logger);
+
+        spdlog::info("JVM TI agent logger initialized");
+    } catch (const spdlog::spdlog_ex& ex) {
+        // 初始化失败时，用stderr输出（避免程序崩溃）
+        fprintf(stderr, "Failed to initialize logger: %s\n", ex.what());
+    }
 }
 
 
