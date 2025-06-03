@@ -1,11 +1,8 @@
 #include <jvmti.h>
-#include <iostream>
 #include <classfile_constants.h>
 #ifdef _WIN32
 #include <Windows.h>
 #endif
-// JVM TI代理中初始化spdlog
-#include <spdlog/async.h>
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/rotating_file_sink.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
@@ -24,42 +21,38 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (!logger) {
             try {
+                // 控制台彩色日志（调试时用）
+                const auto console_sink = std::make_shared<spdlog::sinks::stderr_color_sink_st>();
+                console_sink->set_level(spdlog::level::debug);
+                // console_sink->set_pattern("[multi_sink_example] [%^%l%$] %v");
+
                 // 异步文件日志（按大小切割，最多保留3个备份）
                 const auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
                     "logs/jvmti_agent.log", 10 * 1024 * 1024, 3);
                 file_sink->set_level(spdlog::level::trace);
 
-                // 控制台彩色日志（调试时用）
-                const auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-                // console_sink->set_level(spdlog::level::debug);
-                // console_sink->set_pattern("[multi_sink_example] [%^%l%$] %v");
-
-                // spdlog::logger logger("multi_sink", {console_sink, file_sink});
-                // logger.set_level(spdlog::level::debug);
 
                 // 组合多个sink
-                std::vector<spdlog::sink_ptr> sinks{file_sink, console_sink};
+                std::vector<spdlog::sink_ptr> sinks = {file_sink, console_sink};
 
-                // 创建异步日志器（队列大小8192，刷新线程优先级可调整）
-                // logger = std::make_shared<spdlog::async_logger>(
-                //     "jvmti_agent", sinks.begin(), sinks.end(),
-                //     spdlog::thread_pool(), spdlog::async_overflow_policy::block);
-
-                // 创建异步日志器，队列大小设为 8192
-                // logger = std::make_shared<spdlog::async_logger>(
-                //     )
-                logger = spdlog::create_async<spdlog::sinks::stderr_color_sink_mt>(
-                    "jvmti_logger");
-                // logger = spdlog::stdout_color_mt("console");
+                logger = std::make_shared<spdlog::logger>("jvmti", begin(sinks), end(sinks));
+                // 创建异步日志器，队列大小设为 8KB = 8192
+                // auto tp = std::make_shared<spdlog::details::thread_pool>(8192, 2);
+                // logger = std::make_shared<spdlog::async_logger>("as", sinks.begin(), sinks.end(), tp,
+                // spdlog::async_overflow_policy::overrun_oldest);
+                //register it if you need to access it globally
+                spdlog::register_logger(logger);
 
                 // 设置日志格式（包含时间、线程ID、日志级别、JVM相关信息）
-                // logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [thread %t] [level %l] "
-                //     "[jvm pid %P] [class %v] %message");
+                logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%P|%t] [%l] %v");
 
                 // 设置日志级别（代理开发时用debug，生产环境用info）
                 logger->set_level(spdlog::level::debug);
                 // 警告及以上级别立即刷新
                 logger->flush_on(spdlog::level::warn);
+                // 设置日志刷新间隔（每5秒刷新一次）
+                spdlog::flush_every(std::chrono::seconds(5));
+                // logger->flush_on()
             } catch (const spdlog::spdlog_ex &e) {
                 // 初始化失败时使用标准错误输出
                 fprintf(stderr, "Failed to initialize logger: %s\n", e.what());
@@ -112,7 +105,11 @@ namespace jvmti_tools {
         JvmtiLogger::get()->trace("JVMTI: The replaced decrypt method is called");
         return input;
     }
+
+    namespace callbacks {
+    }
 }
+
 
 // ClassFileLoadHook 回调函数
 void JNICALL class_file_load_hook_callback(
@@ -131,23 +128,15 @@ void JNICALL class_file_load_hook_callback(
     // *new_class_data_len = class_data_len;
     // *new_class_data = static_cast<unsigned char *>(malloc(class_data_len));
     // memcpy(*new_class_data, class_data, class_data_len);
+    const auto log = JvmtiLogger::get();
+    log->debug("JVMTI: ClassFileLoadHook callback: {}", name);
 
     if (startsWith(name, "DataGuard")) {
-        // jvmti_env->GetClassMethods()
-        JvmtiLogger::get()->debug("JVMTI: ClassFileLoadHook callback: => {}", name);
+        // log->debug("JVMTI: ClassFileLoadHook callback: => {}", name);
         // 定义方法映射表
-        char e[] = "encrypt";
-        char d[] = "decrypt";
-        char s[] = "([B)[B";
-        constexpr JNINativeMethod methods[] = {
-            // {e, s, (void*)&encrypt},
-            // {d, s, reinterpret_cast<void*>(decrypt)}
-        };
-
+        constexpr JNINativeMethod methods[] = {};
         // 注册方法到Java类
         // jni_env->RegisterNatives(class_being_redefined, methods, 1);
-        // printf("Native methods registered dynamically\n");
-        return;
     }
 }
 
@@ -155,7 +144,13 @@ void JNICALL class_file_load_hook_callback(
 void method_entry_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method) {
     char *method_name = nullptr;
     char *class_signature = nullptr;
+    // jvmtiThreadInfo *info_ptr = nullptr;
     jclass declaring_class;
+    const auto log = JvmtiLogger::get();
+
+    // jvmti_env->GetThreadInfo(thread, info_ptr);
+    // log->info("JVMTI: MethodEntry callback: {} {} {}", &info_ptr->name, &info_ptr->priority, &info_ptr->is_daemon);
+
 
     // 获取方法所属类
     jvmti_env->GetMethodDeclaringClass(method, &declaring_class);
@@ -165,13 +160,11 @@ void method_entry_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread,
 
     if (strcmp(class_signature, "LTestApp;") == 0 || strcmp(class_signature, "LDataGuard;") == 0 || startsWith(
             class_signature, "Lcom/grapecity")) {
-        // printf("method_entry_callback jvmti: (%p) (%p) (%hhd)\n", jvmti, jvmti_env, jvmti == jvmti_env);
-        // printf("method_entry_callback jni: (%p) (%p) (%hhd)\n", jni, jni_env, jni == jni_env);
         // 获取方法名称
         jvmti_env->GetMethodName(method, &method_name, nullptr, nullptr);
 
         // 输出类名和方法名
-        JvmtiLogger::get()->debug("method_entry => class_signature: {} method_name: {}", class_signature, method_name);
+        log->debug("method_entry => class_signature: {} method_name: {}", class_signature, method_name);
     }
 
     // 释放资源
@@ -187,18 +180,18 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
     jclass method_class;
     jint class_modifiers;
     jint method_modifiers;
+    const auto log = JvmtiLogger::get();
 
     // 获取方法所在的类
     jvmti_env->GetMethodDeclaringClass(method, &method_class);
     // 获取类签名
     jvmti_env->GetClassSignature(method_class, &class_signature, nullptr);
-    // printf("native_method_bind_callback => %s\n", class_signature);
 
+    log->trace("native_method_bind_callback => {}", class_signature);
 
     // 检查是否为目标类
     if (nullptr != class_signature && strcmp(class_signature, "LDataGuard;") == 0) {
-        // printf("native_method_bind_callback => %s\n", class_signature);
-        JvmtiLogger::get()->info("native_method_bind_callback => {}", class_signature);
+        log->warn("native_method_bind_callback => {}", class_signature);
 
         // 获取方法名称和签名
         jvmti_env->GetMethodName(method, &method_name, &method_signature, nullptr);
@@ -207,9 +200,9 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
         jvmti_env->GetClassModifiers(method_class, &class_modifiers);
         jvmti_env->GetMethodModifiers(method, &method_modifiers);
 
-        JvmtiLogger::get()->debug("Discover the target method: {} {} {}", method_name, method_signature,
-                                  method_modifiers & JVM_ACC_NATIVE);
-        // log->debug("%p => %p", address, new_address_ptr);
+        log->warn("Discover the target method: {} {} {}", method_name, method_signature,
+                  method_modifiers & JVM_ACC_NATIVE);
+        log->warn("{} => {}", address, static_cast<void *>(new_address_ptr));
         *new_address_ptr = reinterpret_cast<void *>(jvmti_tools::encrypt);
 
         // 释放资源
@@ -242,71 +235,124 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
 //     }
 // };
 
-// 代理初始化函数
-JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
-    // 设置控制台输出为 UTF-8 编码
-    // SetConsoleOutputCP(65001);
-    auto log = JvmtiLogger::get();
+// 存储目标类名和字节码修改逻辑
+static std::vector<std::string> target_classes;
 
-    if (agent_onloaded) { return JNI_OK; }
-    log->debug("JVMTI Agent OnLoad: {}", static_cast<void *>(vm));
-    log->debug("JVMTI Agent OnLoad: {:p}", static_cast<void *>(vm));
-    log->debug("JVMTI Agent OnLoad: 0x{:016x}", reinterpret_cast<uintptr_t>(vm));
-
-    // 获取 JVMTI 环境
-    if (vm->GetEnv(reinterpret_cast<void **>(&jvmti), JVMTI_VERSION_1_2) != JNI_OK) {
-        JvmtiLogger::get()->error("Failed to obtain the JVMTI environment");
-        return JNI_OK;
-    }
-
-    // 获取 JNI 环境
-    // jni = getJNIEnv(vm);
-    // 设置JVMTI功能
-    jvmtiCapabilities capabilities;
-    capabilities.can_generate_method_entry_events = 1;
-    capabilities.can_generate_all_class_hook_events = 1;
-    capabilities.can_redefine_classes = 1;
-    capabilities.can_retransform_classes = 1;
-    capabilities.can_generate_native_method_bind_events = 1;
-    // capabilities.can_generate_compiled_method_load_events = 1;
-
-
-    if (jvmti->AddCapabilities(&capabilities) != JVMTI_ERROR_NONE) {
-        log->error("设置 JVMTI 功能失败");
-        return JNI_ERR;
-    }
+// 初始化 Agent 通用逻辑
+jint initialize_agent(JavaVM *vm, char *options) {
+    const auto log = JvmtiLogger::get();
     try {
-        // 注册事件回调
+        // 1. 获取 JVMTI 环境
+        vm->GetEnv(reinterpret_cast<void **>(&jvmti), JVMTI_VERSION_1_2);
+
+        // 2. 解析命令行参数（指定目标类）
+        if (options != nullptr) {
+            std::string opt_str(options);
+            size_t pos = 0;
+            while ((pos = opt_str.find(',')) != std::string::npos) {
+                target_classes.push_back(opt_str.substr(0, pos));
+                opt_str.erase(0, pos + 1);
+            }
+            target_classes.push_back(opt_str);
+        }
+
+        // 3. 设置 JVMTI 功能
+        jvmtiCapabilities capabilities;
+        capabilities.can_generate_method_entry_events = 1;
+        capabilities.can_generate_all_class_hook_events = 1;
+        capabilities.can_redefine_classes = 1;
+        capabilities.can_retransform_classes = 1;
+        capabilities.can_generate_native_method_bind_events = 1;
+        jvmti->AddCapabilities(&capabilities);
+
+        // 4. 注册事件回调
         jvmtiEventCallbacks callbacks = {};
         callbacks.MethodEntry = &method_entry_callback;
         callbacks.ClassFileLoadHook = &class_file_load_hook_callback;
         callbacks.NativeMethodBind = &native_method_bind_callback;
-
-        // 注册事件回调
         jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
-        // 启用方法进入事件
-        jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_METHOD_ENTRY, nullptr);
-        // 启用类文件加载事件
-        jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, nullptr);
-        // 启用本地方法绑定事件
-        jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND, nullptr);
+
+        std::vector<jvmtiEvent> events = {
+            JVMTI_EVENT_METHOD_ENTRY, // 启用方法进入事件
+            JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, // 启用类文件加载事件
+            JVMTI_EVENT_NATIVE_METHOD_BIND // 启用本地方法绑定事件
+        };
+        for (jvmtiEvent event: events) {
+            jvmti->SetEventNotificationMode(JVMTI_ENABLE, event, nullptr);
+        }
     } catch (std::exception &e) {
         log->error("The registration event callback failed: {}", e.what());
-        return JNI_ERR;
+        // return JNI_OK;
     }
 
-    log->debug("The JVMTI agent was loaded successfully");
-    agent_onloaded = true; // 标记为已初始化
     return JNI_OK;
+}
+
+// 执行类转换函数
+jvmtiError retransform_target_classes(jvmtiEnv *jvmti) {
+    // 获取所有已加载的类
+    jclass *classes = nullptr;
+    jint class_count = 0;
+    jvmtiError err = jvmti->GetLoadedClasses(&class_count, &classes);
+    if (err != JNI_OK) {
+        return err;
+    }
+
+    // 筛选出需要转换的类
+    std::vector<jclass> classes_to_retransform;
+    for (jint i = 0; i < class_count; i++) {
+        char *class_signature = nullptr;
+        jvmti->GetClassSignature(classes[i], &class_signature, nullptr);
+
+        // 移除类签名中的 'L' 和 ';'
+        std::string class_name(class_signature);
+        if (class_name[0] == 'L' && class_name[class_name.length() - 1] == ';') {
+            class_name = class_name.substr(1, class_name.length() - 2);
+        }
+
+        // 检查是否是目标类
+        for (const auto &target: target_classes) {
+            if (class_name == target) {
+                classes_to_retransform.push_back(classes[i]);
+                break;
+            }
+        }
+
+        jvmti->Deallocate(reinterpret_cast<unsigned char *>(class_signature));
+    }
+
+    // 释放类列表
+    jvmti->Deallocate(reinterpret_cast<unsigned char *>(classes));
+
+    // 执行类转换
+    if (!classes_to_retransform.empty()) {
+        err = jvmti->RetransformClasses(classes_to_retransform.size(), classes_to_retransform.data());
+    }
+
+    return err;
+}
+
+// 代理初始化函数
+JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
+    const auto log = JvmtiLogger::get();
+    log->debug("JVMTI Agent OnLoad: {}", static_cast<void *>(vm));
+    log->debug("JVMTI Agent OnLoad: {:p}", static_cast<void *>(vm));
+    log->debug("JVMTI Agent OnLoad: 0x{:016x}", reinterpret_cast<uintptr_t>(vm));
+    return initialize_agent(vm, options);
 }
 
 JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM *vm, char *options, void *reserved) {
-    cout << "Agent_OnAttach(" << vm << ")" << endl;
+    // initialize_agent(vm, options);
+    // // 立即执行类转换
+    // const jvmtiError err = retransform_target_classes(jvmti);
+    // if (err != JNI_OK) {
+    //     return JNI_ERR;
+    // }
     return JNI_OK;
 }
 
+
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
-    if (agent_unloaded) { return; }
     const auto logger = JvmtiLogger::get();
     if (logger) {
         logger->info("JVM TI Agent unloading...");
@@ -316,10 +362,4 @@ JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
 
     // 最后关闭日志器
     JvmtiLogger::shutdown();
-}
-
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
-    // 注册JVMTI回调
-    printf("JNI_OnLoad(%p)\n", vm);
-    return JNI_OK;
 }
