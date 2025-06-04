@@ -110,6 +110,14 @@ namespace jvmti_tools {
     }
 }
 
+std::string className(const char *class_signature) {
+    // 移除类签名中的 'L' 和 ';'
+    std::string class_name(class_signature);
+    if (class_name[0] == 'L' && class_name[class_name.length() - 1] == ';') {
+        class_name = class_name.substr(1, class_name.length() - 2);
+    }
+    return class_name;
+}
 
 // ClassFileLoadHook 回调函数
 void JNICALL class_file_load_hook_callback(
@@ -129,12 +137,16 @@ void JNICALL class_file_load_hook_callback(
     // *new_class_data = static_cast<unsigned char *>(malloc(class_data_len));
     // memcpy(*new_class_data, class_data, class_data_len);
     const auto log = JvmtiLogger::get();
-    if (name != nullptr) {
-        log->trace("JVMTI: ClassFileLoadHook callback: {}", name);
+    if (name == nullptr
+        || startsWith(name, "java/")
+        || startsWith(name, "jdk/")
+        || startsWith(name, "sun/")
+    ) {
+        return;
     }
+    log->trace("JVMTI ClassFileLoadHook: {}", name);
 
     if (startsWith(name, "DataGuard")) {
-        // log->debug("JVMTI: ClassFileLoadHook callback: => {}", name);
         // 定义方法映射表
         constexpr JNINativeMethod methods[] = {};
         // 注册方法到Java类
@@ -146,32 +158,40 @@ void JNICALL class_file_load_hook_callback(
 void method_entry_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method) {
     char *method_name = nullptr;
     char *class_signature = nullptr;
-    // jvmtiThreadInfo *info_ptr = nullptr;
     jclass declaring_class;
     const auto log = JvmtiLogger::get();
-
-    // jvmti_env->GetThreadInfo(thread, info_ptr);
-    // log->info("JVMTI: MethodEntry callback: {} {} {}", &info_ptr->name, &info_ptr->priority, &info_ptr->is_daemon);
-
 
     // 获取方法所属类
     jvmti_env->GetMethodDeclaringClass(method, &declaring_class);
 
     // 获取类签名
     jvmti_env->GetClassSignature(declaring_class, &class_signature, nullptr);
+    if (startsWith(className(class_signature), "java/")
+        || startsWith(className(class_signature), "jdk/")
+        || startsWith(className(class_signature), "sun/")
+    ) {
+        return;
+    }
 
-    if (strcmp(class_signature, "LTestApp;") == 0 || strcmp(class_signature, "LDataGuard;") == 0 || startsWith(
-            class_signature, "Lcom/grapecity")) {
+    if (startsWith(className(class_signature), "TestApp") ||
+        startsWith(className(class_signature), "DataGuard") ||
+        startsWith(className(class_signature), "com/grapecity/") ||
+        startsWith(className(class_signature), "com/fr/")
+    ) {
         // 获取方法名称
         jvmti_env->GetMethodName(method, &method_name, nullptr, nullptr);
 
         // 输出类名和方法名
-        log->debug("method_entry => class_signature: {} method_name: {}", class_signature, method_name);
+        log->trace("JVMTI MethodEntry: class => {}, method => {}", className(class_signature), method_name);
     }
 
     // 释放资源
-    jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_name));
-    jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(class_signature));
+    if (class_signature != nullptr) {
+        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(class_signature));
+    }
+    if (method_name != nullptr) {
+        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_name));
+    }
 }
 
 void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method, void *address,
@@ -189,34 +209,38 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
     // 获取类签名
     jvmti_env->GetClassSignature(method_class, &class_signature, nullptr);
 
-
-    if (nullptr != class_signature) {
-        log->trace("native_method_bind_callback => {}", class_signature);
+    if (nullptr == class_signature
+        || startsWith(className(class_signature), "java/")
+        || startsWith(className(class_signature), "jdk/")
+        || startsWith(className(class_signature), "sun/")
+    ) {
+        return;
     }
 
-    // 检查是否为目标类
-    if (nullptr != class_signature && strcmp(class_signature, "LDataGuard;") == 0) {
-        log->warn("native_method_bind_callback => {}", class_signature);
+    // 获取方法名称和签名
+    jvmti_env->GetMethodName(method, &method_name, &method_signature, nullptr);
 
-        // 获取方法名称和签名
-        jvmti_env->GetMethodName(method, &method_name, &method_signature, nullptr);
+    // 获取类和方法的修饰符
+    jvmti_env->GetClassModifiers(method_class, &class_modifiers);
+    jvmti_env->GetMethodModifiers(method, &method_modifiers);
 
-        // 获取类和方法的修饰符
-        jvmti_env->GetClassModifiers(method_class, &class_modifiers);
-        jvmti_env->GetMethodModifiers(method, &method_modifiers);
+    log->trace("JVMTI NativeMethod: {}.{}{}", className(class_signature), method_name, method_signature);
 
-        log->warn("Discover the target method: {} {} {}", method_name, method_signature,
-                  method_modifiers & JVM_ACC_NATIVE);
+    if (startsWith(className(class_signature), "DataGuard")
+        && (method_modifiers & JVM_ACC_NATIVE) == JVM_ACC_NATIVE
+        && std::string(method_name) == "encrypt"
+        && std::string(method_signature) == "([B)[B") {
+        log->warn("Discover the target method: {} {} {}", method_modifiers, method_name, method_signature);
         log->warn("{} => {}", address, static_cast<void *>(new_address_ptr));
         *new_address_ptr = reinterpret_cast<void *>(jvmti_tools::encrypt);
+    }
 
-        // 释放资源
-        if (method_name != nullptr) {
-            jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_name));
-        }
-        if (method_signature != nullptr) {
-            jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_signature));
-        }
+    // 释放资源
+    if (method_name != nullptr) {
+        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_name));
+    }
+    if (method_signature != nullptr) {
+        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_signature));
     }
 
     // 释放类签名资源
@@ -348,11 +372,13 @@ JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM *vm, char *options, void *reserved)
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
     const auto logger = JvmtiLogger::get();
     if (logger) {
-        logger->info("JVM TI Agent unloading...");
+
+        logger->debug("JVMTI Agent unloading...");
     }
 
     // 执行其他清理操作（如释放 JVM TI 资源）
-
+    const auto addr = reinterpret_cast<uintptr_t>(vm);
+    logger->debug("JVMTI Agent Unloaded: 0x{:016X}", addr);
     // 最后关闭日志器
     JvmtiLogger::shutdown();
 }
