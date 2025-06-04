@@ -4,11 +4,11 @@ include(cmake/common.cmake)
 
 project(jvmti-tools VERSION 1.0 LANGUAGES CXX)
 
-
 # ----------------------
 # cmake 默认配置
 # ----------------------
 set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_FETCHCONTENT_QUIET OFF CACHE BOOL "FetchContent QUIET")
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "ON" FORCE)
 

@@ -23,13 +23,13 @@ public:
             try {
                 // 控制台彩色日志（调试时用）
                 const auto console_sink = std::make_shared<spdlog::sinks::stderr_color_sink_st>();
-                console_sink->set_level(spdlog::level::debug);
+                console_sink->set_level(spdlog::level::trace);
                 // console_sink->set_pattern("[multi_sink_example] [%^%l%$] %v");
 
                 // 异步文件日志（按大小切割，最多保留3个备份）
                 const auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
                     "logs/jvmti_agent.log", 10 * 1024 * 1024, 3);
-                file_sink->set_level(spdlog::level::trace);
+                file_sink->set_level(spdlog::level::debug);
 
 
                 // 组合多个sink
@@ -44,10 +44,10 @@ public:
                 spdlog::register_logger(logger);
 
                 // 设置日志格式（包含时间、线程ID、日志级别、JVM相关信息）
-                logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%P|%t] [%l] %v");
+                logger->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%P|%t] [%L] %v%$");
 
                 // 设置日志级别（代理开发时用debug，生产环境用info）
-                logger->set_level(spdlog::level::debug);
+                logger->set_level(spdlog::level::trace);
                 // 警告及以上级别立即刷新
                 logger->flush_on(spdlog::level::warn);
                 // 设置日志刷新间隔（每5秒刷新一次）
@@ -129,7 +129,9 @@ void JNICALL class_file_load_hook_callback(
     // *new_class_data = static_cast<unsigned char *>(malloc(class_data_len));
     // memcpy(*new_class_data, class_data, class_data_len);
     const auto log = JvmtiLogger::get();
-    log->debug("JVMTI: ClassFileLoadHook callback: {}", name);
+    if (name != nullptr) {
+        log->trace("JVMTI: ClassFileLoadHook callback: {}", name);
+    }
 
     if (startsWith(name, "DataGuard")) {
         // log->debug("JVMTI: ClassFileLoadHook callback: => {}", name);
@@ -187,7 +189,10 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
     // 获取类签名
     jvmti_env->GetClassSignature(method_class, &class_signature, nullptr);
 
-    log->trace("native_method_bind_callback => {}", class_signature);
+
+    if (nullptr != class_signature) {
+        log->trace("native_method_bind_callback => {}", class_signature);
+    }
 
     // 检查是否为目标类
     if (nullptr != class_signature && strcmp(class_signature, "LDataGuard;") == 0) {
@@ -219,21 +224,6 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
         jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(class_signature));
     }
 }
-
-// 简化指针格式化器（截取低16位，无0x前缀）
-// template <>
-// struct fmt::formatter<void*> {
-//     constexpr auto parse(format_parse_context& ctx) -> decltype(ctx.begin()) {
-//         return ctx.begin();
-//     }
-//
-//     template <typename FormatContext>
-//     auto format(const void* ptr, FormatContext& ctx) -> decltype(ctx.out()) {
-//         // 将指针转换为 uintptr_t 并截取低16位
-//         const auto addr = reinterpret_cast<uintptr_t>(ptr);
-//         return fmt::format_to(ctx.out(), "{:016x}", addr & 0xFFFF);
-//     }
-// };
 
 // 存储目标类名和字节码修改逻辑
 static std::vector<std::string> target_classes;
@@ -335,9 +325,12 @@ jvmtiError retransform_target_classes(jvmtiEnv *jvmti) {
 // 代理初始化函数
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
     const auto log = JvmtiLogger::get();
-    log->debug("JVMTI Agent OnLoad: {}", static_cast<void *>(vm));
-    log->debug("JVMTI Agent OnLoad: {:p}", static_cast<void *>(vm));
-    log->debug("JVMTI Agent OnLoad: 0x{:016x}", reinterpret_cast<uintptr_t>(vm));
+    const auto addr = reinterpret_cast<uintptr_t>(vm);
+    log->debug("JVMTI Agent OnLoad: 0x{:016X}", addr);
+    // log->debug("JVMTI Agent OnLoad: 0x {:04x} {:04x} {:04x} {:04x}",
+    //            addr >> 48 & 0xFFFF, addr >> 32 & 0xFFFF,
+    //            addr >> 16 & 0xFFFF, addr & 0xFFFF);
+
     return initialize_agent(vm, options);
 }
 
