@@ -3,6 +3,13 @@
 #ifdef _WIN32
 #include <Windows.h>
 #endif
+#include <fstream>
+#include <iostream>
+#include <filesystem>
+#include <mutex>
+#include <atomic>
+
+#include "spdlog/async_logger.h"
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/rotating_file_sink.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
@@ -28,8 +35,9 @@ public:
 
                 // 异步文件日志（按大小切割，最多保留3个备份）
                 const auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-                    "logs/jvmti_agent.log", 10 * 1024 * 1024, 3);
-                file_sink->set_level(spdlog::level::debug);
+                    "logs/jvmti_agent.log", 10 * 1024 * 1024, 10);
+                file_sink->set_level(spdlog::level::trace);
+                // file_sink->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%P|%t] [%L] %v%$");
 
 
                 // 组合多个sink
@@ -37,9 +45,9 @@ public:
 
                 logger = std::make_shared<spdlog::logger>("jvmti", begin(sinks), end(sinks));
                 // 创建异步日志器，队列大小设为 8KB = 8192
-                // auto tp = std::make_shared<spdlog::details::thread_pool>(8192, 2);
+                // auto tp = std::make_shared<spdlog::details::thread_pool>(8, 4);
                 // logger = std::make_shared<spdlog::async_logger>("as", sinks.begin(), sinks.end(), tp,
-                // spdlog::async_overflow_policy::overrun_oldest);
+                // spdlog::async_overflow_policy::block);
                 //register it if you need to access it globally
                 spdlog::register_logger(logger);
 
@@ -119,6 +127,60 @@ std::string className(const char *class_signature) {
     return class_name;
 }
 
+namespace fs = std::filesystem;
+static std::mutex dump_mutex;
+static std::atomic<bool> dump_enabled(true);
+
+bool ensureDirectoryExists(const std::string &filePath) {
+    const fs::path path(filePath);
+
+    // 如果目录不存在，则创建（包括所有父目录）
+    if (const fs::path directory = path.parent_path(); !fs::exists(directory)) {
+        return fs::create_directories(directory);
+    }
+
+    return true; // 目录已存在
+}
+
+// 转储类文件到磁盘
+void dump_class_file(const std::string &base, const std::string &class_name,
+                     const unsigned char *class_data,
+                     const jint class_data_len) {
+    if (!dump_enabled || !class_data || class_data_len <= 0) {
+        return;
+    }
+
+    const auto logger = JvmtiLogger::get();
+
+    // 创建输出目录
+    std::string file_path = base + class_name + ".class";
+
+    const fs::path dir = fs::path(file_path).parent_path();
+    try {
+        if (!fs::exists(dir)) {
+            fs::create_directories(dir);
+        }
+    } catch (const fs::filesystem_error &ex) {
+        if (logger) logger->error("Failed to create directory: {}", ex.what());
+        return;
+    }
+
+    // 写入类文件
+    std::lock_guard<std::mutex> lock(dump_mutex);
+    try {
+        if (std::ofstream file(file_path, std::ios::binary); file.is_open()) {
+            file.write(reinterpret_cast<const char *>(class_data), class_data_len);
+            file.close();
+        } else {
+            if (logger) logger->error("Failed to open file: {}", file_path);
+        }
+    } catch (const std::exception &ex) {
+        if (logger) logger->error("Error dumping class: {}", ex.what());
+    }
+}
+
+jmethodID get_name_method;
+jclass class_loader_class;
 // ClassFileLoadHook 回调函数
 void JNICALL class_file_load_hook_callback(
     jvmtiEnv *jvmti_env,
@@ -127,7 +189,7 @@ void JNICALL class_file_load_hook_callback(
     jobject loader,
     const char *name,
     jobject protection_domain,
-    jint class_data_len,
+    const jint class_data_len,
     const unsigned char *class_data,
     jint *new_class_data_len,
     unsigned char **new_class_data
@@ -136,30 +198,45 @@ void JNICALL class_file_load_hook_callback(
     // *new_class_data_len = class_data_len;
     // *new_class_data = static_cast<unsigned char *>(malloc(class_data_len));
     // memcpy(*new_class_data, class_data, class_data_len);
-    const auto log = JvmtiLogger::get();
-    if (name == nullptr
+
+    if (name == nullptr || class_data_len < 0
         || startsWith(name, "java/")
         || startsWith(name, "jdk/")
-        || startsWith(name, "sun/")
+        || startsWith(name, "com/sun/")
     ) {
         return;
     }
-    log->trace("JVMTI ClassFileLoadHook: {}", name);
 
-    if (startsWith(name, "DataGuard")) {
-        // 定义方法映射表
-        constexpr JNINativeMethod methods[] = {};
-        // 注册方法到Java类
-        // jni_env->RegisterNatives(class_being_redefined, methods, 1);
+    if (startsWith(name, "com/fr/license") || startsWith(name, "com/fr/regist")) {
+        const auto log = JvmtiLogger::get();
+        log->trace("JVMTI ClassFileLoadHook: {}", name);
+        // 获取前4个字节
+        unsigned char magic[4] = {
+            class_data[0], // 0xCA
+            class_data[1], // 0xFE
+            class_data[2], // 0xBA
+            class_data[3] // 0xBE
+        };
+        // 验证魔数
+        if (magic[0] == 0xCA && magic[1] == 0xFE && magic[2] == 0xBA && magic[3] == 0xBE) {
+            // todo 获取类加载器名称, 查看到底是哪个类加载器解密的，或者是 attach agent 解密的
+        } else {
+            // 0x03050709 ... 记录需要转换重新转换的类
+            log->error("Invalid magic number: 0x{:02X}{:02X}{:02X}{:02X}, {} has been modified by fr ",
+                       magic[0], magic[1], magic[2], magic[3], name);
+        }
+
+        // 转储原始类文件
+        dump_class_file("/Users/wuyujie/Project/opensource/jvmti-demo/classes/", name, class_data, class_data_len);
     }
 }
 
 // 方法进入事件回调
 void method_entry_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method) {
     char *method_name = nullptr;
+    char *method_signature = nullptr;
     char *class_signature = nullptr;
     jclass declaring_class;
-    const auto log = JvmtiLogger::get();
 
     // 获取方法所属类
     jvmti_env->GetMethodDeclaringClass(method, &declaring_class);
@@ -173,17 +250,32 @@ void method_entry_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread,
         return;
     }
 
+    const auto log = JvmtiLogger::get();
     if (startsWith(className(class_signature), "TestApp") ||
         startsWith(className(class_signature), "DataGuard") ||
         startsWith(className(class_signature), "com/grapecity/") ||
-        startsWith(className(class_signature), "com/fr/")
+        startsWith(className(class_signature), "com/fr/license/LicenseActivator")
     ) {
         // 获取方法名称
-        jvmti_env->GetMethodName(method, &method_name, nullptr, nullptr);
+        jvmti_env->GetMethodName(method, &method_name, &method_signature, nullptr);
 
         // 输出类名和方法名
         log->trace("JVMTI MethodEntry: class => {}, method => {}", className(class_signature), method_name);
     }
+    if (startsWith(className(class_signature), "com/fr/license/LicenseActivator")
+        && strcmp(method_name, "start") == 0
+        && strcmp(method_signature, "()V") == 0
+    ) {
+        log->warn("JVMTI MethodEntry: {}.{}{}", className(class_signature), method_name, method_signature);
+        log->info("try retransform class: {}", className(class_signature));
+        try {
+            const jclass *classes = {&declaring_class};
+            jvmti_env->RetransformClasses(1, classes);
+        } catch (const std::exception &ex) {
+            if (log) log->error("failed retransform class:{} => {}", className(class_signature), ex.what());
+        }
+    }
+
 
     // 释放资源
     if (class_signature != nullptr) {
@@ -192,17 +284,20 @@ void method_entry_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread,
     if (method_name != nullptr) {
         jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_name));
     }
+    if (method_signature != nullptr) {
+        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_signature));
+    }
 }
 
-void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method, void *address,
-                                 void **new_address_ptr) {
+// 本地方法绑定回调函数
+void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method,
+                                 void *address, void **new_address_ptr) {
     char *class_signature = nullptr;
     char *method_name = nullptr;
     char *method_signature = nullptr;
     jclass method_class;
     jint class_modifiers;
     jint method_modifiers;
-    const auto log = JvmtiLogger::get();
 
     // 获取方法所在的类
     jvmti_env->GetMethodDeclaringClass(method, &method_class);
@@ -212,7 +307,8 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
     if (nullptr == class_signature
         || startsWith(className(class_signature), "java/")
         || startsWith(className(class_signature), "jdk/")
-        || startsWith(className(class_signature), "sun/")
+        || startsWith(className(class_signature), "com/sun/")
+        || !startsWith(className(class_signature), "com/fr")
     ) {
         return;
     }
@@ -224,6 +320,7 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
     jvmti_env->GetClassModifiers(method_class, &class_modifiers);
     jvmti_env->GetMethodModifiers(method, &method_modifiers);
 
+    const auto log = JvmtiLogger::get();
     log->trace("JVMTI NativeMethod: {}.{}{}", className(class_signature), method_name, method_signature);
 
     if (startsWith(className(class_signature), "DataGuard")
@@ -287,7 +384,7 @@ jint initialize_agent(JavaVM *vm, char *options) {
         jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
         std::vector<jvmtiEvent> events = {
-            JVMTI_EVENT_METHOD_ENTRY, // 启用方法进入事件
+            // JVMTI_EVENT_METHOD_ENTRY, // 启用方法进入事件
             JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, // 启用类文件加载事件
             JVMTI_EVENT_NATIVE_METHOD_BIND // 启用本地方法绑定事件
         };
@@ -296,7 +393,6 @@ jint initialize_agent(JavaVM *vm, char *options) {
         }
     } catch (std::exception &e) {
         log->error("The registration event callback failed: {}", e.what());
-        // return JNI_OK;
     }
 
     return JNI_OK;
@@ -355,7 +451,8 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
     //            addr >> 48 & 0xFFFF, addr >> 32 & 0xFFFF,
     //            addr >> 16 & 0xFFFF, addr & 0xFFFF);
 
-    return initialize_agent(vm, options);
+    initialize_agent(vm, options);
+    return JNI_OK;
 }
 
 JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM *vm, char *options, void *reserved) {
@@ -368,11 +465,9 @@ JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM *vm, char *options, void *reserved)
     return JNI_OK;
 }
 
-
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
     const auto logger = JvmtiLogger::get();
     if (logger) {
-
         logger->debug("JVMTI Agent unloading...");
     }
 
