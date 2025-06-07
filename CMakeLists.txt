@@ -130,7 +130,11 @@ elseif (UNIX)
 endif ()
 
 # 添加源文件
-add_library(${JVMTI_TOOLS_LIB_NAME} SHARED src/agent.cpp)
+add_library(${JVMTI_TOOLS_LIB_NAME} SHARED
+        src/agent.cpp
+        src/jvmti/MethodTrace.cpp
+        src/jvmti/MethodTrace.h
+)
 add_library(data-guard SHARED src/DataGuard.h src/DataGuard.cpp)
 
 if (WIN32)
@@ -176,5 +180,5 @@ add_custom_target(clean_install
         COMMENT "清理安装目录"
 )
 
-#add_subdirectory(data-guard)
-#add_subdirectory(utils)
+add_executable(jvmti main.cpp)
+target_link_libraries(jvmti PRIVATE spdlog::spdlog)
