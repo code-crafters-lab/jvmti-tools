@@ -1,6 +1,3 @@
-//
-// Created by WuYujie on 2025/5/30.
-//
 
 #include "DataGuard.h"
 
