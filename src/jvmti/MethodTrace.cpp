@@ -6,8 +6,7 @@
 using namespace jvmti_tools;
 
 template<typename T>
-BlockingQueue<T>::BlockingQueue(const size_t max_size) {
-    max_size_ = max_size;
+BlockingQueue<T>::BlockingQueue(const size_t max_size): max_size_(max_size) {
 }
 
 template<typename T>

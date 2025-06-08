@@ -663,15 +663,9 @@ jint initialize_agent(JavaVM *vm, char *options) {
         jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_METHOD_ENTRY, nullptr);
         jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_METHOD_EXIT, nullptr);
         // 启用主进程 方法进入/退出事件
-        // jthread *main_thread;
-        // jvmti->GetCurrentThread(main_thread);
-        // if (main_thread != nullptr) {
-        //     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_METHOD_ENTRY, *main_thread);
-        //     jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_METHOD_EXIT, *main_thread);
-        // }
 
         // 初始化全局状态
-        // agent_state = new jvmti_tools::AgentState(log);
+        agent_state = new jvmti_tools::AgentState(log);
         // for (auto target_package: agent_state->getConfig().target_packages) {
         //     log->trace("Target package: {}", target_package);
         // }
@@ -716,4 +710,6 @@ JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
     logger->debug("JVMTI Agent Unloaded: 0x{:016X}", addr);
     // 最后关闭日志器
     JvmtiLogger::shutdown();
+    delete agent_state;
+    agent_state = nullptr;
 }

@@ -17,7 +17,7 @@
 namespace jvmti_tools {
     // 方法调用记录（使用智能指针管理资源）
     struct MethodCall {
-        jmethodID method;
+        jmethodID method{};
         std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
     };
 
@@ -42,7 +42,9 @@ namespace jvmti_tools {
         size_t max_queue_size = 10240;
         std::unordered_set<std::string> target_packages = {
             "com/fr/jvm/",
-            "com/fr/license/"
+            "com/fr/license/",
+            "TestApp",
+            "DataGuard",
         };
     };
 
@@ -57,11 +59,11 @@ namespace jvmti_tools {
         std::atomic<size_t> max_size_;
 
     public:
-        explicit BlockingQueue(const size_t max_size = 0);
+        explicit BlockingQueue(size_t max_size = 0);
 
         ~BlockingQueue() = default;
 
-        void push(const T &value) ;
+        void push(const T &value);
 
         bool pop(T &value, std::chrono::milliseconds timeout = std::chrono::milliseconds(0));
 
@@ -79,30 +81,27 @@ namespace jvmti_tools {
         static thread_local std::unique_ptr<ThreadData> thread_data_;
 
     public:
+        explicit AgentState() = default;
 
-        explicit AgentState(const std::shared_ptr<spdlog::logger> & logger);
+        explicit AgentState(const std::shared_ptr<spdlog::logger> &logger);
 
         ~AgentState();
 
         AgentConfig getConfig();
 
         // 获取线程本地数据
-        static ThreadData &getThreadData(jvmtiEnv *jvmti, jthread thread) ;
+        static ThreadData &getThreadData(jvmtiEnv *jvmti, jthread thread);
 
         // 异步记录方法耗时
         void logTiming(const MethodTiming &timing);
 
     private:
         // 日志线程主循环
-        void loggingLoop() ;
+        void loggingLoop();
 
         // 写入日志文件（实际应用可替换为数据库或其他存储）
         void writeTimingToLog(const MethodTiming &timing) const;
     };
-
 }
-
-
-
 
 #endif //METHODTRACE_H
