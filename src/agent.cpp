@@ -202,6 +202,7 @@ void JNICALL class_file_load_hook_callback(
     if (name == nullptr || class_data_len < 0
         || startsWith(name, "java/")
         || startsWith(name, "jdk/")
+        || startsWith(name, "sun/")
         || startsWith(name, "com/sun/")
     ) {
         return;
@@ -489,6 +490,7 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
     if (nullptr == class_signature
         || startsWith(className(class_signature), "java/")
         || startsWith(className(class_signature), "jdk/")
+        || startsWith(className(class_signature), "sun/")
         || startsWith(className(class_signature), "com/sun/")
     ) {
         return;
