@@ -180,5 +180,5 @@ add_custom_target(clean_install
         COMMENT "清理安装目录"
 )
 
-add_executable(jvmti main.cpp)
+add_executable(jvmti main.cpp src/jvmti/Logger.h src/jvmti/Logger.cpp)
 target_link_libraries(jvmti PRIVATE spdlog::spdlog)
