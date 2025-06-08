@@ -211,6 +211,8 @@ void JNICALL class_file_load_hook_callback(
         startsWith(name, "com/fr/license")
         || startsWith(name, "com/fr/regist")
         || startsWith(name, "com/fr/jvm")
+        || startsWith(name, "TestApp")
+        || startsWith(name, "DataGuard")
     ) {
         const auto log = JvmtiLogger::get();
         // 获取前4个字节
@@ -488,7 +490,6 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
         || startsWith(className(class_signature), "java/")
         || startsWith(className(class_signature), "jdk/")
         || startsWith(className(class_signature), "com/sun/")
-        || !startsWith(className(class_signature), "com/fr")
     ) {
         return;
     }
@@ -506,7 +507,8 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
     if (startsWith(className(class_signature), "DataGuard")
         && (method_modifiers & JVM_ACC_NATIVE) == JVM_ACC_NATIVE
         && std::string(method_name) == "encrypt"
-        && std::string(method_signature) == "([B)[B") {
+        && std::string(method_signature) == "([B)[B"
+    ) {
         log->warn("Discover the target method: {} {} {}", method_modifiers, method_name, method_signature);
         log->warn("{} => {}", address, static_cast<void *>(new_address_ptr));
         *new_address_ptr = reinterpret_cast<void *>(jvmti_tools::encrypt);
@@ -667,10 +669,10 @@ jint initialize_agent(JavaVM *vm, char *options) {
         // }
 
         // 初始化全局状态
-        agent_state = new jvmti_tools::AgentState(log);
-        for (auto target_package: agent_state->getConfig().target_packages) {
-            log->info("Target package: {}", target_package);
-        }
+        // agent_state = new jvmti_tools::AgentState(log);
+        // for (auto target_package: agent_state->getConfig().target_packages) {
+        //     log->trace("Target package: {}", target_package);
+        // }
     } catch (std::exception &e) {
         log->error("The registration event callback failed: {}", e.what());
     }
