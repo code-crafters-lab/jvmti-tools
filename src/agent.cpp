@@ -194,6 +194,7 @@ void JNICALL class_file_load_hook_callback(
     jint *new_class_data_len,
     unsigned char **new_class_data
 ) {
+    // jni_env.ge
     // 非目标类，直接返回原始字节码
     // *new_class_data_len = class_data_len;
     // *new_class_data = static_cast<unsigned char *>(malloc(class_data_len));
@@ -562,6 +563,36 @@ void class_load_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, j
 }
 
 void class_prepare_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jclass klass) {
+    // 查找 ProductConstants 类
+    const auto logger = JvmtiLogger::get();
+    jvmti_env->GetClassSignature(klass, &class_signature, nullptr);
+    if (!startsWith(className(class_signature), "com/fr/stable/ProductConstants")) {
+        return;
+    }
+
+    logger->info("{} is being prepared", className(class_signature));
+
+    // 获取 VERSION 字段 ID
+    jfieldID versionFieldId = jni_env->GetStaticFieldID(klass, "VERSION", "Ljava/lang/String;");
+    if (versionFieldId == nullptr) {
+        logger->warn("Field not found!");
+        return;
+    }
+
+    // 获取字段值
+    jstring versionStr = (jstring) jni_env->GetStaticObjectField(klass, versionFieldId);
+    if (versionStr == nullptr) {
+        logger->warn("Field value is null!");
+        return;
+    }
+    const char* cStr = jni_env->GetStringUTFChars(versionStr, nullptr);
+    if (cStr == nullptr) {
+        return;  // 处理异常情况，例如内存分配失败等
+    }
+    std::string str(cStr);
+
+    logger->info("Version: {}", str);
+    // jni_env->NewStringUTF(&charPtr);
 }
 
 
@@ -649,11 +680,12 @@ jint initialize_agent(JavaVM *vm, char *options) {
         jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
         std::vector<jvmtiEvent> events = {
-            JVMTI_EVENT_THREAD_START,
-            JVMTI_EVENT_THREAD_END,
-            JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, // 启用类文件加载事件
+            // JVMTI_EVENT_THREAD_START,
+            // JVMTI_EVENT_THREAD_END,
+            // JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, // 启用类文件加载事件
             JVMTI_EVENT_CLASS_LOAD, // 启用类加载事件
-            JVMTI_EVENT_NATIVE_METHOD_BIND, // 启用本地方法绑定事件
+            JVMTI_EVENT_CLASS_PREPARE, // 启用类准备事件
+            // JVMTI_EVENT_NATIVE_METHOD_BIND, // 启用本地方法绑定事件
         };
         for (jvmtiEvent event: events) {
             jvmti->SetEventNotificationMode(JVMTI_ENABLE, event, nullptr);
