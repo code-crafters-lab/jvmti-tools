@@ -566,33 +566,40 @@ void class_prepare_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread
     // 查找 ProductConstants 类
     const auto logger = JvmtiLogger::get();
     jvmti_env->GetClassSignature(klass, &class_signature, nullptr);
-    if (!startsWith(className(class_signature), "com/fr/stable/ProductConstants")) {
-        return;
-    }
+    if (startsWith(className(class_signature), "com/fr/stable/ProductConstants")) {
+        logger->info("{} is being prepared", className(class_signature));
 
-    logger->info("{} is being prepared", className(class_signature));
+        // 获取 VERSION 字段 ID
+        jfieldID versionFieldId = jni_env->GetStaticFieldID(klass, "VERSION", "Ljava/lang/String;");
+        if (versionFieldId == nullptr) {
+            logger->warn("Field not found!");
+            return;
+        }
 
-    // 获取 VERSION 字段 ID
-    jfieldID versionFieldId = jni_env->GetStaticFieldID(klass, "VERSION", "Ljava/lang/String;");
-    if (versionFieldId == nullptr) {
-        logger->warn("Field not found!");
-        return;
-    }
+        // 获取字段值
+        jstring versionStr = (jstring) jni_env->GetStaticObjectField(klass, versionFieldId);
+        if (versionStr == nullptr) {
+            logger->warn("Field value is null!");
+            return;
+        }
+        const char *cStr = jni_env->GetStringUTFChars(versionStr, nullptr);
+        if (cStr == nullptr) {
+            return; // 处理异常情况，例如内存分配失败等
+        }
+        std::string str(cStr);
 
-    // 获取字段值
-    jstring versionStr = (jstring) jni_env->GetStaticObjectField(klass, versionFieldId);
-    if (versionStr == nullptr) {
-        logger->warn("Field value is null!");
-        return;
+        logger->info("Version: {}", str);
+    } else if (startsWith(className(class_signature), "com/fr/general/GeneralUtils")) {
+        logger->info("{} is being prepared", className(class_signature));
+        try {
+            jmethodID static_method_id = jni_env->GetStaticMethodID(klass, "readBuildNO", "()Ljava/lang/String");
+            // jstring call_static_char_method = (jstring) jni_env->CallStaticObjectMethod(klass, static_method_id);
+            // const char *cStr = jni_env->GetStringUTFChars(call_static_char_method, nullptr);
+            // logger->info("buildNo: {}", cStr);
+        } catch (std::exception &e) {
+            logger->error("The agent initialization failed: {}", e.what());
+        }
     }
-    const char* cStr = jni_env->GetStringUTFChars(versionStr, nullptr);
-    if (cStr == nullptr) {
-        return;  // 处理异常情况，例如内存分配失败等
-    }
-    std::string str(cStr);
-
-    logger->info("Version: {}", str);
-    // jni_env->NewStringUTF(&charPtr);
 }
 
 
