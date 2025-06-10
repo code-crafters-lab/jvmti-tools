@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <mutex>
 #include <atomic>
+#include <regex>
 
 #include "jvmti/MethodTrace.h"
 #include "spdlog/async.h"
@@ -95,6 +96,7 @@ std::shared_ptr<spdlog::details::thread_pool> JvmtiLogger::tp = nullptr;
 std::shared_ptr<spdlog::logger> JvmtiLogger::logger = nullptr;
 std::mutex JvmtiLogger::mutex_;
 std::atomic<bool> JvmtiLogger::shutdown_(false);
+static const std::regex exclude_class_pattern("^(L)?(apple|java|jdk|sun|com/sun|com/apple)/");
 
 // 全局单例状态
 static jvmti_tools::AgentState *agent_state = nullptr;
@@ -142,18 +144,31 @@ namespace fs = std::filesystem;
 static std::mutex dump_mutex;
 // static std::atomic<bool> dump_enabled(true);
 
+std::string removeTrailingSlash(const std::string &base_path) {
+    namespace fs = std::filesystem;
+    fs::path p = base_path;
+    if (!p.empty() && p.filename() == "") {
+        // 尾部是斜杠
+        p = p.parent_path();
+    }
+    return p.string();
+}
+
 // 转储类文件到磁盘
 void dump_class_file(const std::string &base, const std::string &class_name,
                      const unsigned char *class_data,
-                     const jint class_data_len, const atomic_bool &dump_enabled = true) {
-    if (!dump_enabled || !class_data || class_data_len <= 0) {
+                     const jint class_data_len, const atomic_bool &encrypted_class = false) {
+    if (!class_data || class_data_len <= 0) {
         return;
     }
 
     const auto logger = JvmtiLogger::get();
 
     // 创建输出目录
-    std::string file_path = base + class_name + ".class";
+    std::string file_path = std::format("{0}/{2}/{1}.class", removeTrailingSlash(base), class_name,
+                                        encrypted_class ? "classes_encrypted" : "classes");
+
+    logger->warn("file path {}", file_path);
 
     const fs::path dir = fs::path(file_path).parent_path();
     try {
@@ -200,12 +215,7 @@ void JNICALL class_file_load_hook_callback(
     // *new_class_data = static_cast<unsigned char *>(malloc(class_data_len));
     // memcpy(*new_class_data, class_data, class_data_len);
 
-    if (name == nullptr || class_data_len < 0
-        || startsWith(name, "java/")
-        || startsWith(name, "jdk/")
-        || startsWith(name, "sun/")
-        || startsWith(name, "com/sun/")
-    ) {
+    if (name == nullptr || class_data_len < 0 || std::regex_search(name, exclude_class_pattern)) {
         return;
     }
 
@@ -224,26 +234,21 @@ void JNICALL class_file_load_hook_callback(
             class_data[2], // 0xBA
             class_data[3] // 0xBE
         };
+        bool is_encrypted = false;
         // 验证魔数
         if (magic[0] == 0xCA && magic[1] == 0xFE && magic[2] == 0xBA && magic[3] == 0xBE) {
             // todo 获取类加载器名称, 查看到底是哪个类加载器解密的，或者是 attach agent 解密的
             log->trace("JVMTI ClassFileLoad: {}", name);
         } else {
+            is_encrypted = true;
             // 0x03050709 ... 记录需要转换重新转换的类
             log->error("JVMTI ClassFileLoad: magic => 0x{:02X}{:02X}{:02X}{:02X},{} has been encrypted by fr",
                        magic[0], magic[1], magic[2], magic[3], name);
         }
-        // jthread thread;
-        // jvmtiThreadInfo thread_info;
-        // jvmti_env->GetCurrentThread(&thread);
-        // jvmti_env->GetThreadInfo(thread, &thread_info);
-        // log->info("JVMTI ClassFileLoad: thread name => {1}, thread priority => {0}", thread_info.priority, thread_info.name);
-        // if (thread_info.name != "main") {
-        //     // jvmti_env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_METHOD_ENTRY, thread);
-        // }
 
         // 转储原始类文件
-        dump_class_file("/Users/wuyujie/Project/opensource/jvmti-demo/classes/", name, class_data, class_data_len);
+        dump_class_file("/Users/wuyujie/Project/opensource/jvmti-demo/",
+                        name, class_data, class_data_len, is_encrypted);
     }
 }
 
@@ -488,12 +493,7 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
     // 获取类签名
     jvmti_env->GetClassSignature(method_class, &class_signature, nullptr);
 
-    if (nullptr == class_signature
-        || startsWith(className(class_signature), "java/")
-        || startsWith(className(class_signature), "jdk/")
-        || startsWith(className(class_signature), "sun/")
-        || startsWith(className(class_signature), "com/sun/")
-    ) {
+    if (nullptr == class_signature || std::regex_search(class_signature, exclude_class_pattern)) {
         return;
     }
 
@@ -516,19 +516,10 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
         log->warn("{} => {}", address, static_cast<void *>(new_address_ptr));
         *new_address_ptr = reinterpret_cast<void *>(jvmti_tools::encrypt);
     }
-    // com/fr/license/entity/AbstractLicense.init(Ljava/lang/String;)V
-    // com/fr/license/entity/TrailLicense.maxConcurrencyLevel()I
     if (std::string(className(class_signature)) == "com/fr/license/entity/TrailLicense"
         && std::string(method_name) == "maxConcurrencyLevel"
         && std::string(method_signature) == "()I"
     ) {
-        // log->warn("Discover the target method: {} {} {}", method_modifiers, method_name, method_signature);
-        // log->warn("重新转换已加载的类 start");
-        // target_classes.clear();
-        // target_classes.emplace_back("com/fr/license/selector/LicenseConstants");
-        // target_classes.emplace_back("com/fr/license/entity/AbstractLicense");
-        // retransform_target_classes(jvmti_env);
-        // log->warn("重新转换已加载的类 end");
     }
 
     // 释放资源
@@ -566,8 +557,10 @@ void class_prepare_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread
     // 查找 ProductConstants 类
     const auto logger = JvmtiLogger::get();
     jvmti_env->GetClassSignature(klass, &class_signature, nullptr);
-    if (startsWith(className(class_signature), "com/fr/stable/ProductConstants")) {
-        logger->info("{} is being prepared", className(class_signature));
+    if (const std::regex product_constants_pattern("Lcom/fr/stable/ProductConstants;$");
+        std::regex_match(class_signature, product_constants_pattern)
+    ) {
+        logger->info("{} is being prepared => {}", className(class_signature), class_signature);
 
         // 获取 VERSION 字段 ID
         jfieldID versionFieldId = jni_env->GetStaticFieldID(klass, "VERSION", "Ljava/lang/String;");
@@ -589,19 +582,33 @@ void class_prepare_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread
         std::string str(cStr);
 
         logger->info("Version: {}", str);
-    } else if (startsWith(className(class_signature), "com/fr/general/GeneralUtils")) {
-        logger->info("{} is being prepared", className(class_signature));
+    }
+    if (const std::regex general_utils_pattern("^Lcom/fr/general/IOUtils;$");
+        std::regex_match(class_signature, general_utils_pattern)
+    ) {
+        logger->info("{} is being prepared => {}", className(class_signature), class_signature);
+    }
+
+    if (const std::regex general_utils_pattern("^Lcom/fr/general/GeneralUtils;$");
+        std::regex_match(class_signature, general_utils_pattern)
+    ) {
+        logger->info("{} is being prepared => {}", className(class_signature), class_signature);
         try {
-            jmethodID static_method_id = jni_env->GetStaticMethodID(klass, "readBuildNO", "()Ljava/lang/String");
-            // jstring call_static_char_method = (jstring) jni_env->CallStaticObjectMethod(klass, static_method_id);
-            // const char *cStr = jni_env->GetStringUTFChars(call_static_char_method, nullptr);
-            // logger->info("buildNo: {}", cStr);
+            jmethodID static_method_id1 = jni_env->GetStaticMethodID(klass, "readBuildNO", "()Ljava/lang/String;");
+            jstring call_static_char_method1 = (jstring) jni_env->CallStaticObjectMethod(klass, static_method_id1);
+            const char *cStr1 = jni_env->GetStringUTFChars(call_static_char_method1, nullptr);
+            logger->info("buildNo: {}", cStr1);
+
+            // getVersion  readFullVersionNO
+            jmethodID static_method_id2 = jni_env->GetStaticMethodID(klass, "getVersion", "()Ljava/lang/String;");
+            jstring call_static_char_method2 = (jstring) jni_env->CallStaticObjectMethod(klass, static_method_id2);
+            const char *cStr2 = jni_env->GetStringUTFChars(call_static_char_method2, nullptr);
+            logger->info("VersionNO: {}", cStr2);
         } catch (std::exception &e) {
             logger->error("The agent initialization failed: {}", e.what());
         }
     }
 }
-
 
 // Thread-4 Attach Listener
 void thread_start_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, const jthread thread) {
@@ -641,7 +648,6 @@ void thread_end_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, const jthread thr
         logger->error("The registration event callback failed: {}", e.what());
     }
 }
-
 
 // 初始化 Agent 通用逻辑
 jint initialize_agent(JavaVM *vm, char *options) {
@@ -689,10 +695,10 @@ jint initialize_agent(JavaVM *vm, char *options) {
         std::vector<jvmtiEvent> events = {
             // JVMTI_EVENT_THREAD_START,
             // JVMTI_EVENT_THREAD_END,
-            // JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, // 启用类文件加载事件
-            JVMTI_EVENT_CLASS_LOAD, // 启用类加载事件
+            JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, // 启用类文件加载事件
+            // JVMTI_EVENT_CLASS_LOAD, // 启用类加载事件
             JVMTI_EVENT_CLASS_PREPARE, // 启用类准备事件
-            // JVMTI_EVENT_NATIVE_METHOD_BIND, // 启用本地方法绑定事件
+            JVMTI_EVENT_NATIVE_METHOD_BIND, // 启用本地方法绑定事件
         };
         for (jvmtiEvent event: events) {
             jvmti->SetEventNotificationMode(JVMTI_ENABLE, event, nullptr);
