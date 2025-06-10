@@ -11,9 +11,11 @@ private:
 public:
     AgentProxy();
 
-    static void Initialization(JavaVM *vm, char *options, bool attach = false);
+    static void Initialization(JavaVM *vm, char *options, bool attach = false){}
 
-    static void Shutdown(JavaVM *vm);
+    static void Shutdown(JavaVM *vm) {
+
+    }
 };
 
 // 代理随 JVM 初始化启动逻辑

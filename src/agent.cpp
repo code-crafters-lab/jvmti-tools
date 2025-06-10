@@ -99,7 +99,7 @@ std::atomic<bool> JvmtiLogger::shutdown_(false);
 static const std::regex exclude_class_pattern("^(L)?(apple|java|jdk|sun|com/sun|com/apple)/");
 
 // 全局单例状态
-static jvmti_tools::AgentState *agent_state = nullptr;
+// static jvmti_tools::AgentState *agent_state = nullptr;
 static jvmtiEnv *jvmti = nullptr; // 全局JVMTI环境指针
 // static JNIEnv *jni = nullptr; // 全局JNI环境指针
 // static bool agent_onloaded = false; // 全局标记
@@ -113,7 +113,6 @@ bool startsWith(const std::string &str, const std::string &prefix) {
 }
 
 namespace jvmti_tools {
-    class AgentState;
     // 替换后的 native 方法实现
     JNIEXPORT jbyteArray JNICALL encrypt(JNIEnv *, jclass, jbyteArray input) {
         JvmtiLogger::get()->trace("JVMTI: The replaced encrypt method is called");
@@ -347,46 +346,46 @@ void method_entry_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread,
 void method_exit_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method,
                           jboolean was_popped_by_exception, jvalue return_value) {
     return;
-    if (!agent_state->getConfig().enabled) return;
-
-    auto &data = jvmti_tools::AgentState::getThreadData(jvmti, thread);
-    if (data.call_stack.empty()) return;
-
-    // 获取栈顶调用记录
-    const auto &call = data.call_stack.top();
-
-    // 计算耗时（毫秒）
-    auto end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double, std::milli> elapsed = end_time - call.start_time;
-
-    // 获取方法信息
-    char *method_name = nullptr;
-    char *method_sig = nullptr;
-    jvmti_env->GetMethodName(method, &method_name, &method_sig, nullptr);
-
-    // 获取类信息
-    jclass clazz;
-    jvmti_env->GetMethodDeclaringClass(method, &clazz);
-    char *class_sig = nullptr;
-    jvmti_env->GetClassSignature(clazz, &class_sig, nullptr);
-
-    // 构建耗时记录
-    jvmti_tools::MethodTiming timing;
-    timing.thread_name = data.thread_name;
-    timing.class_name = class_sig ? class_sig : "unknown";
-    timing.method_name = method_name ? method_name : "unknown";
-    timing.elapsed_ms = elapsed.count();
-
-    // 异步记录
-    agent_state->logTiming(timing);
-
-    // 释放资源
-    if (method_name) jvmti->Deallocate(reinterpret_cast<unsigned char *>(method_name));
-    if (method_sig) jvmti->Deallocate(reinterpret_cast<unsigned char *>(method_sig));
-    if (class_sig) jvmti->Deallocate(reinterpret_cast<unsigned char *>(class_sig));
-
-    // 弹出栈顶
-    data.call_stack.pop();
+    // if (!agent_state->getConfig().enabled) return;
+    //
+    // auto &data = jvmti_tools::AgentState::getThreadData(jvmti, thread);
+    // if (data.call_stack.empty()) return;
+    //
+    // // 获取栈顶调用记录
+    // const auto &call = data.call_stack.top();
+    //
+    // // 计算耗时（毫秒）
+    // auto end_time = std::chrono::high_resolution_clock::now();
+    // std::chrono::duration<double, std::milli> elapsed = end_time - call.start_time;
+    //
+    // // 获取方法信息
+    // char *method_name = nullptr;
+    // char *method_sig = nullptr;
+    // jvmti_env->GetMethodName(method, &method_name, &method_sig, nullptr);
+    //
+    // // 获取类信息
+    // jclass clazz;
+    // jvmti_env->GetMethodDeclaringClass(method, &clazz);
+    // char *class_sig = nullptr;
+    // jvmti_env->GetClassSignature(clazz, &class_sig, nullptr);
+    //
+    // // 构建耗时记录
+    // jvmti_tools::MethodTiming timing;
+    // timing.thread_name = data.thread_name;
+    // timing.class_name = class_sig ? class_sig : "unknown";
+    // timing.method_name = method_name ? method_name : "unknown";
+    // timing.elapsed_ms = elapsed.count();
+    //
+    // // 异步记录
+    // agent_state->logTiming(timing);
+    //
+    // // 释放资源
+    // if (method_name) jvmti->Deallocate(reinterpret_cast<unsigned char *>(method_name));
+    // if (method_sig) jvmti->Deallocate(reinterpret_cast<unsigned char *>(method_sig));
+    // if (class_sig) jvmti->Deallocate(reinterpret_cast<unsigned char *>(class_sig));
+    //
+    // // 弹出栈顶
+    // data.call_stack.pop();
 
     // return;
     // const auto logger = JvmtiLogger::get();
@@ -710,7 +709,7 @@ jint initialize_agent(JavaVM *vm, char *options) {
         // 启用主进程 方法进入/退出事件
 
         // 初始化全局状态
-        agent_state = new jvmti_tools::AgentState(log);
+        // agent_state = new jvmti_tools::AgentState(log);
         // for (auto target_package: agent_state->getConfig().target_packages) {
         //     log->trace("Target package: {}", target_package);
         // }
@@ -755,6 +754,6 @@ JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
     logger->debug("JVMTI Agent Unloaded: 0x{:016X}", addr);
     // 最后关闭日志器
     JvmtiLogger::shutdown();
-    delete agent_state;
-    agent_state = nullptr;
+    // delete agent_state;
+    // agent_state = nullptr;
 }

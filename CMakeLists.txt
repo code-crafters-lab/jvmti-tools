@@ -132,8 +132,6 @@ endif ()
 # 添加源文件
 add_library(${JVMTI_TOOLS_LIB_NAME} SHARED
         src/agent.cpp
-        src/jvmti/MethodTrace.cpp
-        src/jvmti/MethodTrace.h
 )
 add_library(data-guard SHARED src/DataGuard.h src/DataGuard.cpp)
 
@@ -148,13 +146,6 @@ if (WIN32)
 else ()
     set(CMAKE_INSTALL_PREFIX "${PROJECT_SOURCE_DIR}/install")
 endif ()
-
-#message(STATUS "安装目录前缀 ${CMAKE_INSTALL_PREFIX}")
-#message(STATUS "可执行文件目录 ${CMAKE_INSTALL_BINDIR}")
-#message(STATUS "库文件目录 ${CMAKE_INSTALL_LIBDIR}")
-#message(STATUS "头文件目录 ${CMAKE_INSTALL_INCLUDEDIR}")
-#message(STATUS "数据文件目录 ${CMAKE_INSTALL_DATAROOM}")
-#message(STATUS "配置文件目录 ${CMAKE_INSTALL_SYSCONFDIR}")
 
 install(TARGETS ${JVMTI_TOOLS_LIB_NAME} data-guard
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}  # 动态库安装路径（Linux/macOS为lib，Windows为bin）
@@ -182,3 +173,5 @@ add_custom_target(clean_install
 
 add_executable(jvmti main.cpp src/jvmti/Logger.h src/jvmti/Logger.cpp)
 target_link_libraries(jvmti PRIVATE spdlog::spdlog)
+
+add_subdirectory(src/jhook)
