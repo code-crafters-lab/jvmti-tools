@@ -10,7 +10,7 @@
 namespace fs = std::filesystem;
 
 namespace jvmti {
-    class CodeDump final : private Agent {
+    class CodeDump final : Agent {
     private:
         static std::mutex dump_mutex;
 
@@ -81,4 +81,6 @@ namespace jvmti {
             save("", name, class_data, class_data_len);
         }
     };
+
+    std::mutex CodeDump::dump_mutex;
 } // jvmti

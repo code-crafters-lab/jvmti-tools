@@ -3,9 +3,11 @@
 //
 
 #include "Logger.h"
+
+#include <ranges>
+
 #include "spdlog/sinks/rotating_file_sink.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
-
 
 namespace jvmti {
     std::shared_ptr<spdlog::details::thread_pool> Logger::thread_pool_ = nullptr;
@@ -117,7 +119,7 @@ namespace jvmti {
 
     void Logger::shutdown() { {
             std::lock_guard<std::mutex> lock(mutex_);
-            for (auto [_, logger]: event_loggers_) {
+            for (auto logger: event_loggers_ | std::views::values) {
                 if (logger) {
                     logger->flush(); // 强制刷新所有待处理日志
                     logger.reset(); // 释放共享指针

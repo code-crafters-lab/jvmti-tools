@@ -6,11 +6,9 @@
 #include <exception>
 
 namespace jvmti {
+    Logger Agent::logger; // 定义并初始化（类外）
 
-    Logger Agent::logger;  // 定义并初始化（类外）
-
-    Agent::Agent(JavaVM *vm, char *args) {
-        // : g_vm{vm}
+    Agent::Agent(JavaVM *vm, char *args): g_vm(vm) {
         try {
             // 1. 获取 JVMTI 环境
             vm->GetEnv(reinterpret_cast<void **>(&g_jvmti), JVMTI_VERSION_1_2);
@@ -20,6 +18,8 @@ namespace jvmti {
     }
 
     Agent::~Agent() {
+        delete this->g_jvmti;
+        delete this->g_vm;
     }
 
     void Agent::processAgent(const bool attach) {
@@ -34,6 +34,4 @@ namespace jvmti {
         if (attach) {
         }
     }
-
-
 } // jvmti

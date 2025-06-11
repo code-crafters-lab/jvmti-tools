@@ -8,7 +8,6 @@
 #include "spdlog/async.h"
 #include "spdlog/spdlog.h"
 
-
 namespace jvmti {
 
     using Event = std::variant<jvmtiEvent, int>;

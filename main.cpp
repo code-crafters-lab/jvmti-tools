@@ -1,5 +1,4 @@
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/async.h>
 #include <thread>
 #include <chrono>
@@ -20,7 +19,7 @@ void test(jvmti::Logger logger) {
         if (sig.find(pkg) != std::string::npos) {
             log->warn("method_entry_callback => {}", sig);
             log->warn("find: {0} != {1} {3} contains {2}", sig.find(pkg), std::string::npos, pkg, sig);
-            // is_target = true;
+            is_target = true;
             break;
         }
     }
@@ -28,17 +27,27 @@ void test(jvmti::Logger logger) {
 }
 
 int main() {
+    std::stack<int> s;
     jvmti::Logger logger;
     const auto primary = logger.get();
 
     // 测试日志记录
     for (int i = 0; i < 10; ++i) {
         // 模拟异步日志处理时间
+        s.push(i + 1);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         primary->debug("异步日志测试 - 消息 {}", i);
     }
 
     test(logger);
+
+    // 遍历栈（需先复制，因 pop 会修改原栈）
+    std::stack<int> temp = s;
+    while (!temp.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        primary->info("stack => {}", temp.top());
+        temp.pop();
+    }
 
     logger.shutdown();
 

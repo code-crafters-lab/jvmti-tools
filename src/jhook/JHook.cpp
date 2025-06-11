@@ -4,19 +4,42 @@
 #include <jvmti.h>
 
 class AgentProxy {
-private:
-    static JavaVM *vm;
     static bool initialized;
+    JavaVM *vm;
 
 public:
     AgentProxy();
 
-    static void Initialization(JavaVM *vm, char *options, bool attach = false){}
+    static bool isInitialized() {
+        return initialized;
+    }
+
+    static void Initialization(JavaVM *vm, char *options, const bool attach = false) {
+        // 检查是否已初始化
+        if (initialized) {
+            printf("Agent already initialized, skipping re-initialization\n");
+            return;
+        } else {
+            // 执行初始化逻辑
+            printf("Initializing agent for the first time\n");
+
+            // 这里放置你的初始化代码
+            // ...
+
+            // 设置标志为已初始化
+            initialized = true;
+        }
+
+        if (attach) {
+            // 执行附加逻辑
+        }
+    }
 
     static void Shutdown(JavaVM *vm) {
-
     }
 };
+
+bool AgentProxy::initialized = false;
 
 // 代理随 JVM 初始化启动逻辑
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
