@@ -9,8 +9,9 @@
 #include <mutex>
 #include <atomic>
 #include <regex>
+#include <shared_mutex>
+#include <unordered_set>
 
-#include "jvmti/MethodTrace.h"
 #include "spdlog/async.h"
 #include "spdlog/spdlog.h"
 #include "spdlog/sinks/rotating_file_sink.h"
@@ -56,7 +57,7 @@ public:
                 // 设置日志格式（包含时间、线程ID、日志级别、JVM相关信息）
                 logger->set_pattern("%^[%Y-%m-%d %H:%M:%S.%e] [%n] [%L] [%P|%t] %v%$");
                 // 设置日志级别（代理开发时用debug，生产环境用info）
-                logger->set_level(spdlog::level::trace);
+                logger->set_level(spdlog::level::debug);
                 // 警告及以上级别立即刷新(或禁用日志刷新时间等待)
                 logger->flush_on(spdlog::level::off);
 
@@ -96,10 +97,12 @@ std::shared_ptr<spdlog::details::thread_pool> JvmtiLogger::tp = nullptr;
 std::shared_ptr<spdlog::logger> JvmtiLogger::logger = nullptr;
 std::mutex JvmtiLogger::mutex_;
 std::atomic<bool> JvmtiLogger::shutdown_(false);
-static const std::regex exclude_class_pattern("^(L)?(apple|java|jdk|sun|com/sun|com/apple)/");
 
-// 全局单例状态
-// static jvmti_tools::AgentState *agent_state = nullptr;
+static const std::regex exclude_class_pattern("^(L)?(apple|java|jdk|sun|com/sun|com/apple)/");
+static const std::regex include_class_pattern(
+    "^L?com/fr/(general|license|plugin|protect|record|regist|security|stable|startup|web|workspace|jvm)|TestApp|DataGuard");
+static std::shared_ptr<unordered_set<std::string> > encryptedClasses = nullptr;
+
 static jvmtiEnv *jvmti = nullptr; // 全局JVMTI环境指针
 // static JNIEnv *jni = nullptr; // 全局JNI环境指针
 // static bool agent_onloaded = false; // 全局标记
@@ -141,7 +144,6 @@ std::string className(const char *class_signature) {
 
 namespace fs = std::filesystem;
 static std::mutex dump_mutex;
-// static std::atomic<bool> dump_enabled(true);
 
 std::string removeTrailingSlash(const std::string &base_path) {
     namespace fs = std::filesystem;
@@ -167,7 +169,7 @@ void dump_class_file(const std::string &base, const std::string &class_name,
     std::string file_path = std::format("{0}/{2}/{1}.class", removeTrailingSlash(base), class_name,
                                         encrypted_class ? "classes_encrypted" : "classes");
 
-    logger->warn("file path {}", file_path);
+    // logger->warn("file path {}", file_path);
 
     const fs::path dir = fs::path(file_path).parent_path();
     try {
@@ -193,6 +195,17 @@ void dump_class_file(const std::string &base, const std::string &class_name,
     }
 }
 
+// 检测类是否被加密（示例逻辑，需根据实际加密方式调整）
+bool isClassEncrypted(const unsigned char *class_data, const jsize class_data_len) {
+    // 示例：检查类文件魔数（正常Java类魔数为0xCAFEBABE）
+    if (class_data_len >= 4 &&
+        (class_data[0] != 0xCA || class_data[1] != 0xFE ||
+         class_data[2] != 0xBA || class_data[3] != 0xBE)) {
+        return true; // 魔数不匹配，可能被加密
+    }
+    return false;
+}
+
 jmethodID get_name_method;
 jclass class_loader_class;
 // ClassFileLoadHook 回调函数
@@ -208,42 +221,18 @@ void JNICALL class_file_load_hook_callback(
     jint *new_class_data_len,
     unsigned char **new_class_data
 ) {
-    // jni_env.ge
-    // 非目标类，直接返回原始字节码
-    // *new_class_data_len = class_data_len;
-    // *new_class_data = static_cast<unsigned char *>(malloc(class_data_len));
-    // memcpy(*new_class_data, class_data, class_data_len);
-
-    if (name == nullptr || class_data_len < 0 || std::regex_search(name, exclude_class_pattern)) {
-        return;
-    }
-
-    if (
-        startsWith(name, "com/fr/license")
-        || startsWith(name, "com/fr/regist")
-        || startsWith(name, "com/fr/jvm")
-        || startsWith(name, "TestApp")
-        || startsWith(name, "DataGuard")
-    ) {
-        const auto log = JvmtiLogger::get();
-        // 获取前4个字节
-        unsigned char magic[4] = {
-            class_data[0], // 0xCA
-            class_data[1], // 0xFE
-            class_data[2], // 0xBA
-            class_data[3] // 0xBE
-        };
-        bool is_encrypted = false;
+    if (!name || std::regex_search(name, exclude_class_pattern)) return;
+    if (std::regex_search(name, include_class_pattern)) {
+        const bool is_encrypted = isClassEncrypted(class_data, class_data_len);
         // 验证魔数
-        if (magic[0] == 0xCA && magic[1] == 0xFE && magic[2] == 0xBA && magic[3] == 0xBE) {
-            // todo 获取类加载器名称, 查看到底是哪个类加载器解密的，或者是 attach agent 解密的
-            log->trace("JVMTI ClassFileLoad: {}", name);
-        } else {
-            is_encrypted = true;
-            // 0x03050709 ... 记录需要转换重新转换的类
-            log->error("JVMTI ClassFileLoad: magic => 0x{:02X}{:02X}{:02X}{:02X},{} has been encrypted by fr",
-                       magic[0], magic[1], magic[2], magic[3], name);
+        if (is_encrypted) {
+            encryptedClasses->insert(name);
+            const auto log = JvmtiLogger::get();
+            log->trace("JVMTI ClassFileLoad: encrypted_class [{}] {}",
+                       std::format("{:04}", encryptedClasses->size()), name);
         }
+        // todo 获取类加载器名称, 查看到底是哪个类加载器解密的，或者是 attach agent 解密的
+        // log->trace("JVMTI ClassFileLoad: {}", name);
 
         // 转储原始类文件
         dump_class_file("/Users/wuyujie/Project/opensource/jvmti-demo/",
@@ -427,16 +416,12 @@ void method_exit_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, 
     // logger->trace("{} {} Exit 内部耗时：{}ms", className(class_signature), method_name, elapsed.count());
 }
 
-// 存储目标类名和字节码修改逻辑
-static std::vector<std::string> target_classes = {
-    "com/fr/license/entity/AbstractLicense",
-    "com/fr/license/entity/FineLicense",
-    "com/fr/license/entity/LicenseMatchInfo",
-    "com/fr/license/entity/TrailLicense"
-};
 // 执行类转换函数
-jvmtiError retransform_target_classes(jvmtiEnv *jvmti) {
-    // 获取所有已加载的类
+jvmtiError retransform_target_classes(jvmtiEnv *jvmti, const std::unordered_set<std::string> &target_classes) {
+    // 1. 检查目标类集合是否为空
+    if (target_classes.empty()) return JVMTI_ERROR_NONE;
+
+    // 2. 获取所有已加载的类
     jclass *classes = nullptr;
     jint class_count = 0;
     jvmtiError err = jvmti->GetLoadedClasses(&class_count, &classes);
@@ -444,9 +429,9 @@ jvmtiError retransform_target_classes(jvmtiEnv *jvmti) {
         return err;
     }
 
-    // 筛选出需要转换的类
+    // 3. 筛选出需要重新转换的类
     std::vector<jclass> classes_to_retransform;
-    auto logger = JvmtiLogger::get();
+    const auto logger = JvmtiLogger::get();
 
     char *class_signature = nullptr;
     for (jint i = 0; i < class_count; i++) {
@@ -455,7 +440,7 @@ jvmtiError retransform_target_classes(jvmtiEnv *jvmti) {
         // 检查是否是目标类
         for (const auto &target: target_classes) {
             if (class_name == target) {
-                logger->debug("Found target class: {}", class_name);
+                logger->trace("Found target class: {}", class_name);
                 classes_to_retransform.push_back(classes[i]);
                 break;
             }
@@ -553,59 +538,80 @@ void class_load_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, j
 }
 
 void class_prepare_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jclass klass) {
-    // 查找 ProductConstants 类
+    // 静态常量正则表达式，避免重复编译
+    static const std::regex product_constants_pattern("Lcom/fr/stable/ProductConstants;$");
+    static const std::regex general_utils_pattern("^Lcom/fr/general/GeneralUtils;$");
+
     const auto logger = JvmtiLogger::get();
-    jvmti_env->GetClassSignature(klass, &class_signature, nullptr);
-    if (const std::regex product_constants_pattern("Lcom/fr/stable/ProductConstants;$");
-        std::regex_match(class_signature, product_constants_pattern)
-    ) {
-        logger->info("{} is being prepared => {}", className(class_signature), class_signature);
+    char *class_signature = nullptr;
 
-        // 获取 VERSION 字段 ID
-        jfieldID versionFieldId = jni_env->GetStaticFieldID(klass, "VERSION", "Ljava/lang/String;");
-        if (versionFieldId == nullptr) {
-            logger->warn("Field not found!");
+    // 获取类签名
+    if (jvmti_env->GetClassSignature(klass, &class_signature, nullptr) != JVMTI_ERROR_NONE) {
+        return;
+    }
+
+    // 辅助函数：安全获取字符串字段值并记录日志
+    auto getAndLogStringField = [&](const char *fieldName, const char *signature) {
+        const jfieldID fieldId = jni_env->GetStaticFieldID(klass, fieldName, signature);
+        if (!fieldId) {
+            logger->warn("Field {} not found!", fieldName);
             return;
         }
 
-        // 获取字段值
-        jstring versionStr = (jstring) jni_env->GetStaticObjectField(klass, versionFieldId);
-        if (versionStr == nullptr) {
-            logger->warn("Field value is null!");
+        const auto strObj = static_cast<jstring>(jni_env->GetStaticObjectField(klass, fieldId));
+        if (!strObj) {
+            logger->warn("Field {} value is null!", fieldName);
             return;
         }
-        const char *cStr = jni_env->GetStringUTFChars(versionStr, nullptr);
-        if (cStr == nullptr) {
-            return; // 处理异常情况，例如内存分配失败等
+
+        if (const char *cStr = jni_env->GetStringUTFChars(strObj, nullptr)) {
+            logger->info("{}: {}", fieldName, cStr);
+            jni_env->ReleaseStringUTFChars(strObj, cStr);
         }
-        std::string str(cStr);
+        jni_env->DeleteLocalRef(strObj);
+    };
 
-        logger->info("Version: {}", str);
-    }
-    if (const std::regex general_utils_pattern("^Lcom/fr/general/IOUtils;$");
-        std::regex_match(class_signature, general_utils_pattern)
-    ) {
-        logger->info("{} is being prepared => {}", className(class_signature), class_signature);
-    }
-
-    if (const std::regex general_utils_pattern("^Lcom/fr/general/GeneralUtils;$");
-        std::regex_match(class_signature, general_utils_pattern)
-    ) {
-        logger->info("{} is being prepared => {}", className(class_signature), class_signature);
-        try {
-            jmethodID static_method_id1 = jni_env->GetStaticMethodID(klass, "readBuildNO", "()Ljava/lang/String;");
-            jstring call_static_char_method1 = (jstring) jni_env->CallStaticObjectMethod(klass, static_method_id1);
-            const char *cStr1 = jni_env->GetStringUTFChars(call_static_char_method1, nullptr);
-            logger->info("buildNo: {}", cStr1);
-
-            // getVersion  readFullVersionNO
-            jmethodID static_method_id2 = jni_env->GetStaticMethodID(klass, "getVersion", "()Ljava/lang/String;");
-            jstring call_static_char_method2 = (jstring) jni_env->CallStaticObjectMethod(klass, static_method_id2);
-            const char *cStr2 = jni_env->GetStringUTFChars(call_static_char_method2, nullptr);
-            logger->info("VersionNO: {}", cStr2);
-        } catch (std::exception &e) {
-            logger->error("The agent initialization failed: {}", e.what());
+    // 辅助函数：安全调用静态方法并记录返回的字符串
+    auto callAndLogStaticStringMethod = [&](const char *methodName, const char *signature) {
+        const jmethodID methodId = jni_env->GetStaticMethodID(klass, methodName, signature);
+        if (!methodId) {
+            logger->warn("Method {} not found!", methodName);
+            return;
         }
+
+        const auto strObj = static_cast<jstring>(jni_env->CallStaticObjectMethod(klass, methodId));
+        if (jni_env->ExceptionCheck()) {
+            jni_env->ExceptionDescribe();
+            jni_env->ExceptionClear();
+            return;
+        }
+
+        if (!strObj) {
+            logger->warn("Method {} returned null!", methodName);
+            return;
+        }
+
+        if (const char *cStr = jni_env->GetStringUTFChars(strObj, nullptr)) {
+            logger->info("{}: {}", methodName, cStr);
+            // todo 存储方法返回值
+            jni_env->ReleaseStringUTFChars(strObj, cStr);
+        }
+        jni_env->DeleteLocalRef(strObj);
+    };
+
+    // 处理 ProductConstants 类
+    if (std::regex_match(class_signature, product_constants_pattern)) {
+        getAndLogStringField("VERSION", "Ljava/lang/String;");
+    }
+    // 处理 GeneralUtils 类
+    else if (std::regex_match(class_signature, general_utils_pattern)) {
+        callAndLogStaticStringMethod("readBuildNO", "()Ljava/lang/String;");
+        callAndLogStaticStringMethod("getVersion", "()Ljava/lang/String;");
+    }
+
+    // 释放类签名资源
+    if (class_signature) {
+        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(class_signature));
     }
 }
 
@@ -648,6 +654,32 @@ void thread_end_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, const jthread thr
     }
 }
 
+void vm_start_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env) {
+}
+
+void exception_callback(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread, jmethodID method, jlocation location, jobject exception,
+                        jmethodID catch_method, jlocation catch_location) {
+    // // 获取异常类名
+    const jclass exceptionClass = jni_env->GetObjectClass(exception);
+    char* classSignature;
+    jvmti_env->GetClassSignature(exceptionClass, &classSignature, nullptr);
+
+    const auto log = JvmtiLogger::get();
+    // 记录异常信息
+    log->error("Exception thrown: {} at method {} at location {}", classSignature, "method", location);
+
+    // 释放资源
+    if (classSignature != nullptr) {
+        jvmti_env->Deallocate(reinterpret_cast<unsigned char*>(classSignature));
+    }
+
+}
+
+void exception_catch_callback(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread, jmethodID method, jlocation location,
+                              jobject exception) {
+
+}
+
 // 初始化 Agent 通用逻辑
 jint initialize_agent(JavaVM *vm, char *options) {
     const auto log = JvmtiLogger::get();
@@ -666,6 +698,11 @@ jint initialize_agent(JavaVM *vm, char *options) {
         //     target_classes.push_back(opt_str);
         // }
 
+        // 初始化全局状态
+        if (!encryptedClasses) {
+            encryptedClasses = std::make_shared<std::unordered_set<std::string> >();
+        }
+
         // 3. 设置 JVMTI 功能
         jvmtiCapabilities capabilities;
         capabilities.can_generate_all_class_hook_events = 1;
@@ -676,19 +713,23 @@ jint initialize_agent(JavaVM *vm, char *options) {
         capabilities.can_generate_method_entry_events = 1;
         capabilities.can_generate_method_exit_events = 1;
 
+        capabilities.can_generate_exception_events = 1;
         capabilities.can_generate_native_method_bind_events = 1;
         jvmti->AddCapabilities(&capabilities);
 
         // 4. 注册事件回调
         jvmtiEventCallbacks callbacks = {};
-        callbacks.ThreadStart = &thread_start_callback;
-        callbacks.ThreadEnd = &thread_end_callback;
+        // callbacks.ThreadStart = &thread_start_callback;
+        // callbacks.ThreadEnd = &thread_end_callback;
         callbacks.ClassFileLoadHook = &class_file_load_hook_callback;
-        callbacks.ClassLoad = &class_load_callback;
+        // callbacks.ClassLoad = &class_load_callback;
         callbacks.ClassPrepare = &class_prepare_callback;
+        // callbacks.VMStart = &vm_start_callback;
+        callbacks.Exception = &exception_callback;
+        callbacks.ExceptionCatch = &exception_catch_callback;
         callbacks.NativeMethodBind = &native_method_bind_callback;
-        callbacks.MethodEntry = &method_entry_callback;
-        callbacks.MethodExit = &method_exit_callback;
+        // callbacks.MethodEntry = &method_entry_callback;
+        // callbacks.MethodExit = &method_exit_callback;
         jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
         std::vector<jvmtiEvent> events = {
@@ -697,6 +738,9 @@ jint initialize_agent(JavaVM *vm, char *options) {
             JVMTI_EVENT_CLASS_FILE_LOAD_HOOK, // 启用类文件加载事件
             // JVMTI_EVENT_CLASS_LOAD, // 启用类加载事件
             JVMTI_EVENT_CLASS_PREPARE, // 启用类准备事件
+            // JVMTI_EVENT_VM_START, // 启用虚拟机启动事件
+            JVMTI_EVENT_EXCEPTION, // 启用异常事件
+            JVMTI_EVENT_EXCEPTION_CATCH, // 启用异常捕获事件
             JVMTI_EVENT_NATIVE_METHOD_BIND, // 启用本地方法绑定事件
         };
         for (jvmtiEvent event: events) {
@@ -707,12 +751,6 @@ jint initialize_agent(JavaVM *vm, char *options) {
         jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_METHOD_ENTRY, nullptr);
         jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_METHOD_EXIT, nullptr);
         // 启用主进程 方法进入/退出事件
-
-        // 初始化全局状态
-        // agent_state = new jvmti_tools::AgentState(log);
-        // for (auto target_package: agent_state->getConfig().target_packages) {
-        //     log->trace("Target package: {}", target_package);
-        // }
     } catch (std::exception &e) {
         log->error("The registration event callback failed: {}", e.what());
     }
@@ -739,7 +777,7 @@ JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM *vm, char *options, void *reserved)
     initialize_agent(vm, options);
 
     // 立即执行类转换
-    retransform_target_classes(jvmti);
+    retransform_target_classes(jvmti, *encryptedClasses);
     return JNI_OK;
 }
 
@@ -754,6 +792,4 @@ JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
     logger->debug("JVMTI Agent Unloaded: 0x{:016X}", addr);
     // 最后关闭日志器
     JvmtiLogger::shutdown();
-    // delete agent_state;
-    // agent_state = nullptr;
 }
