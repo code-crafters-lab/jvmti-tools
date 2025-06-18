@@ -416,6 +416,20 @@ void method_exit_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, 
     // logger->trace("{} {} Exit 内部耗时：{}ms", className(class_signature), method_name, elapsed.count());
 }
 
+// 简单的 RAII 包装类
+class JvmtiResource {
+public:
+    JvmtiResource(jvmtiEnv *env, unsigned char *ptr) : env(env), ptr(ptr) {
+    }
+
+    ~JvmtiResource() { if (ptr) env->Deallocate(ptr); }
+    operator unsigned char *() const { return ptr; }
+
+private:
+    jvmtiEnv *env;
+    unsigned char *ptr;
+};
+
 // 执行类转换函数
 jvmtiError retransform_target_classes(jvmtiEnv *jvmti, const std::unordered_set<std::string> &target_classes) {
     // 1. 检查目标类集合是否为空
@@ -462,61 +476,154 @@ jvmtiError retransform_target_classes(jvmtiEnv *jvmti, const std::unordered_set<
     return err;
 }
 
+// 跳板结构 - 用于保存原始方法信息
+struct NativeMethodTrampoline {
+    void *original_address; // 原始方法地址
+    void *replacement; // 替换方法地址
+    bool active; // 是否激活
+};
+
+// 全局跳板注册表
+static std::unordered_map<jmethodID, NativeMethodTrampoline> trampoline_registry;
+static std::shared_mutex registry_mutex; // 读写锁
+
+std::string jbyte_array_to_string(JNIEnv* env, jbyteArray byteArray) {
+    // 1. 检查输入是否为NULL
+    if (byteArray == nullptr) {
+        return "";
+    }
+
+    // 2. 获取数组长度
+    const jsize length = env->GetArrayLength(byteArray);
+    if (length <= 0) {
+        return "";
+    }
+
+    // 3. 获取数组元素
+    jbyte* bytes = env->GetByteArrayElements(byteArray, nullptr);
+    if (bytes == nullptr) {
+        return "";
+    }
+
+    // 4. 转换为字符串（假设使用UTF-8编码）
+    std::string result(reinterpret_cast<char*>(bytes), length);
+
+    // 5. 释放数组元素
+    env->ReleaseByteArrayElements(byteArray, bytes, JNI_ABORT); // 使用JNI_ABORT避免复制回JVM
+
+    return result;
+}
+
+// 替换后的解密函数 - 会调用原始实现
+JNIEXPORT jbyteArray JNICALL new_decrypt(JNIEnv *env, jobject object, jbyteArray data) {
+    // 记录方法信息
+    const auto log = JvmtiLogger::get();
+    // 获取当前方法ID
+    const auto clazz = env->GetObjectClass(object);
+    jmethodID method_id = env->GetMethodID(clazz, "decrypt", "([B)[B");
+    if (!method_id) {
+        return nullptr;
+    }
+
+    // 获取原始方法地址
+    std::shared_lock<std::shared_mutex> lock(registry_mutex);
+    const auto it = trampoline_registry.find(method_id);
+    if (it == trampoline_registry.end()) {
+        return nullptr;
+    }
+
+    // 定义函数指针类型
+    typedef jbyteArray (*DecryptFunc)(JNIEnv*, jobject, jbyteArray);
+    const auto original_encrypt = reinterpret_cast<DecryptFunc>(it->second.original_address);
+
+    // 调用原始方法
+    jbyteArray result = original_encrypt(env, object, data);
+
+    auto str = jbyte_array_to_string(env, result);
+    log->info("解密结果: {}", str);
+
+    // 可以在这里添加对结果的处理逻辑
+    // ...
+
+    return result;
+}
+
 // 本地方法绑定回调函数
 void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method,
                                  void *address, void **new_address_ptr) {
-    char *class_signature = nullptr;
-    char *method_name = nullptr;
-    char *method_signature = nullptr;
-    jclass method_class;
-    jint class_modifiers;
-    jint method_modifiers;
+    // 定义静态正则表达式（避免重复编译）
+    static const std::regex exclude_pattern("^L?(java|sun|jdk)/");
+    static const std::regex include_pattern("^L?(com/fr/|TestApp|DataGuard)");
+    static const std::regex target_class_pattern("^L?com/fr/license/selector/EncryptedLicenseSelector|DataGuard");
 
     // 获取方法所在的类
-    jvmti_env->GetMethodDeclaringClass(method, &method_class);
-    // 获取类签名
-    jvmti_env->GetClassSignature(method_class, &class_signature, nullptr);
+    jclass method_class;
+    if (jvmti_env->GetMethodDeclaringClass(method, &method_class) != JVMTI_ERROR_NONE) {
+        return;
+    }
 
-    if (nullptr == class_signature || std::regex_search(class_signature, exclude_class_pattern)) {
+    // 获取类签名
+    char *class_signature = nullptr;
+    if (jvmti_env->GetClassSignature(method_class, &class_signature, nullptr) != JVMTI_ERROR_NONE) {
+        return;
+    }
+    JvmtiResource classResource(jvmti_env, reinterpret_cast<unsigned char *>(class_signature));
+
+    // 过滤不需要的类
+    if (!class_signature || std::regex_search(class_signature, exclude_pattern)) {
+        return;
+    }
+    if (!std::regex_search(class_signature, include_pattern)) {
         return;
     }
 
     // 获取方法名称和签名
-    jvmti_env->GetMethodName(method, &method_name, &method_signature, nullptr);
+    char *method_name = nullptr;
+    char *method_signature = nullptr;
+    if (jvmti_env->GetMethodName(method, &method_name, &method_signature, nullptr) != JVMTI_ERROR_NONE) {
+        return;
+    }
+    JvmtiResource methodNameResource(jvmti_env, reinterpret_cast<unsigned char *>(method_name));
+    JvmtiResource methodSigResource(jvmti_env, reinterpret_cast<unsigned char *>(method_signature));
 
-    // 获取类和方法的修饰符
-    jvmti_env->GetClassModifiers(method_class, &class_modifiers);
-    jvmti_env->GetMethodModifiers(method, &method_modifiers);
+    // 获取方法修饰符
+    jint method_modifiers;
+    if (jvmti_env->GetMethodModifiers(method, &method_modifiers) != JVMTI_ERROR_NONE) {
+        return;
+    }
 
+    // 记录方法信息
     const auto log = JvmtiLogger::get();
-    log->trace("JVMTI NativeMethod: {}.{}{}", className(class_signature), method_name, method_signature);
+    log->info("JVMTI NativeMethod: {}.{}{}", className(class_signature), method_name, method_signature);
 
-    if (startsWith(className(class_signature), "DataGuard")
-        && (method_modifiers & JVM_ACC_NATIVE) == JVM_ACC_NATIVE
-        && std::string(method_name) == "encrypt"
-        && std::string(method_signature) == "([B)[B"
-    ) {
-        log->warn("Discover the target method: {} {} {}", method_modifiers, method_name, method_signature);
-        log->warn("{} => {}", address, static_cast<void *>(new_address_ptr));
-        *new_address_ptr = reinterpret_cast<void *>(jvmti_tools::encrypt);
-    }
-    if (std::string(className(class_signature)) == "com/fr/license/entity/TrailLicense"
-        && std::string(method_name) == "maxConcurrencyLevel"
-        && std::string(method_signature) == "()I"
-    ) {
-    }
+    // 检查是否为目标方法
+    const bool isTargetMethod =
+            std::regex_search(class_signature, target_class_pattern) &&
+            (method_modifiers & JVM_ACC_PUBLIC) == JVM_ACC_PUBLIC &&
+            // (method_modifiers & JVM_ACC_STATIC) == JVM_ACC_STATIC &&
+            (method_modifiers & JVM_ACC_NATIVE) == JVM_ACC_NATIVE &&
+            std::string(method_name) == "decrypt" &&
+            std::string(method_signature) == "([B)[B";
 
-    // 释放资源
-    if (method_name != nullptr) {
-        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_name));
-    }
-    if (method_signature != nullptr) {
-        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(method_signature));
-    }
+    if (isTargetMethod) {
+        log->warn("发现目标方法: {} {}", method_name, method_signature);
+        log->warn("原始地址: {} => 新地址: {}", address, *new_address_ptr);
 
-    // 释放类签名资源
-    if (class_signature != nullptr) {
-        jvmti_env->Deallocate(reinterpret_cast<unsigned char *>(class_signature));
+        // 保存原始方法信息
+        {
+            std::unique_lock<std::shared_mutex> lock(registry_mutex);
+            trampoline_registry[method] = {
+                .original_address = address,
+                .replacement = *new_address_ptr,
+                .active = true
+            };
+        }
+
+        if ((method_modifiers & JVM_ACC_STATIC) == JVM_ACC_STATIC) {
+            *new_address_ptr = reinterpret_cast<void *>(jvmti_tools::encrypt);
+        } else {
+            *new_address_ptr = reinterpret_cast<void *>(new_decrypt);
+        }
     }
 }
 
@@ -657,27 +764,27 @@ void thread_end_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, const jthread thr
 void vm_start_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env) {
 }
 
-void exception_callback(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread, jmethodID method, jlocation location, jobject exception,
+void exception_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method, jlocation location,
+                        jobject exception,
                         jmethodID catch_method, jlocation catch_location) {
     // // 获取异常类名
-    const jclass exceptionClass = jni_env->GetObjectClass(exception);
-    char* classSignature;
-    jvmti_env->GetClassSignature(exceptionClass, &classSignature, nullptr);
-
-    const auto log = JvmtiLogger::get();
-    // 记录异常信息
-    log->error("Exception thrown: {} at method {} at location {}", classSignature, "method", location);
-
-    // 释放资源
-    if (classSignature != nullptr) {
-        jvmti_env->Deallocate(reinterpret_cast<unsigned char*>(classSignature));
-    }
-
+    // const jclass exceptionClass = jni_env->GetObjectClass(exception);
+    // char* classSignature;
+    // jvmti_env->GetClassSignature(exceptionClass, &classSignature, nullptr);
+    //
+    // const auto log = JvmtiLogger::get();
+    // // 记录异常信息
+    // log->error("Exception thrown: {} at method {} at location {}", classSignature, "method", location);
+    //
+    // // 释放资源
+    // if (classSignature != nullptr) {
+    //     jvmti_env->Deallocate(reinterpret_cast<unsigned char*>(classSignature));
+    // }
 }
 
-void exception_catch_callback(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread, jmethodID method, jlocation location,
+void exception_catch_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method,
+                              jlocation location,
                               jobject exception) {
-
 }
 
 // 初始化 Agent 通用逻辑
