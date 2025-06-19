@@ -423,7 +423,7 @@ public:
     }
 
     ~JvmtiResource() { if (ptr) env->Deallocate(ptr); }
-    operator unsigned char *() const { return ptr; }
+    explicit operator unsigned char *() const { return ptr; }
 
 private:
     jvmtiEnv *env;
@@ -479,7 +479,7 @@ jvmtiError retransform_target_classes(jvmtiEnv *jvmti, const std::unordered_set<
 // 跳板结构 - 用于保存原始方法信息
 struct NativeMethodTrampoline {
     void *original_address; // 原始方法地址
-    void *replacement; // 替换方法地址
+    // void *replacement; // 替换方法地址
     bool active; // 是否激活
 };
 
@@ -487,7 +487,7 @@ struct NativeMethodTrampoline {
 static std::unordered_map<jmethodID, NativeMethodTrampoline> trampoline_registry;
 static std::shared_mutex registry_mutex; // 读写锁
 
-std::string jbyte_array_to_string(JNIEnv* env, jbyteArray byteArray) {
+std::string jbyte_array_to_string(JNIEnv *env, jbyteArray byteArray) {
     // 1. 检查输入是否为NULL
     if (byteArray == nullptr) {
         return "";
@@ -500,18 +500,65 @@ std::string jbyte_array_to_string(JNIEnv* env, jbyteArray byteArray) {
     }
 
     // 3. 获取数组元素
-    jbyte* bytes = env->GetByteArrayElements(byteArray, nullptr);
+    jbyte *bytes = env->GetByteArrayElements(byteArray, nullptr);
     if (bytes == nullptr) {
         return "";
     }
 
     // 4. 转换为字符串（假设使用UTF-8编码）
-    std::string result(reinterpret_cast<char*>(bytes), length);
+    std::string result(reinterpret_cast<char *>(bytes), length);
 
     // 5. 释放数组元素
     env->ReleaseByteArrayElements(byteArray, bytes, JNI_ABORT); // 使用JNI_ABORT避免复制回JVM
 
     return result;
+}
+
+// 检查字节数组前几位是否满足条件
+bool check_header_bytes(JNIEnv *env, jbyteArray data, const char *expected, size_t expected_len) {
+    if (!data || !expected || expected_len == 0) return false;
+
+    jsize len = env->GetArrayLength(data);
+    if (len < static_cast<jsize>(expected_len)) return false;
+
+    jbyte *buffer = new jbyte[expected_len];
+    env->GetByteArrayRegion(data, 0, expected_len, buffer);
+
+    bool match = memcmp(buffer, expected, expected_len) == 0;
+    delete[] buffer;
+
+    return match;
+}
+
+// 自定义解密函数
+jbyteArray custom_decrypt(JNIEnv *env, jbyteArray data) {
+    // 获取原始数据长度
+    jsize original_len = env->GetArrayLength(data);
+    if (original_len <= 4) {
+        // 数据长度不足4字节，直接返回空
+        return nullptr;
+    }
+
+    // 计算解密后的数据长度（去掉前4字节）
+    jsize decrypted_len = original_len - 4;
+
+    // 创建新的字节数组用于存储解密后的数据
+    jbyteArray decrypted_data = env->NewByteArray(decrypted_len);
+    if (!decrypted_data) {
+        return nullptr; // 内存分配失败
+    }
+
+    // 提取原始数据中除前4字节外的内容
+    jbyte *buffer = new jbyte[decrypted_len];
+    env->GetByteArrayRegion(data, 4, decrypted_len, buffer);
+
+    // 设置解密后的数据
+    env->SetByteArrayRegion(decrypted_data, 0, decrypted_len, buffer);
+
+    // 释放临时缓冲区
+    delete[] buffer;
+
+    return decrypted_data;
 }
 
 // 替换后的解密函数 - 会调用原始实现
@@ -532,18 +579,23 @@ JNIEXPORT jbyteArray JNICALL new_decrypt(JNIEnv *env, jobject object, jbyteArray
         return nullptr;
     }
 
-    // 定义函数指针类型
-    typedef jbyteArray (*DecryptFunc)(JNIEnv*, jobject, jbyteArray);
-    const auto original_encrypt = reinterpret_cast<DecryptFunc>(it->second.original_address);
+    // 检查字节数组前几位是否符合条件（示例：前4字节为"LICx"）
+    const char *expected_header = "LICx";
 
-    // 调用原始方法
-    jbyteArray result = original_encrypt(env, object, data);
-
-    auto str = jbyte_array_to_string(env, result);
-    log->info("解密结果: {}", str);
-
-    // 可以在这里添加对结果的处理逻辑
-    // ...
+    jbyteArray result;
+    const bool header_matched = check_header_bytes(env, data, expected_header, 4);
+    log->warn("header_matched: {}", header_matched);
+    if (header_matched) {
+        // 满足条件时使用自定义解密方法
+        result = custom_decrypt(env, data);
+    } else {
+        // 不满足条件时使用原始解密方法
+        typedef jbyteArray (*DecryptFunc)(JNIEnv *, jobject, jbyteArray);
+        const auto original_decrypt = reinterpret_cast<DecryptFunc>(it->second.original_address);
+        result = original_decrypt(env, object, data);
+        auto str = jbyte_array_to_string(env, result);
+        log->info("{}方法解密结果: {}", header_matched ? "自定义" : "原始", str);
+    }
 
     return result;
 }
@@ -607,14 +659,12 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
 
     if (isTargetMethod) {
         log->warn("发现目标方法: {} {}", method_name, method_signature);
-        log->warn("原始地址: {} => 新地址: {}", address, *new_address_ptr);
-
         // 保存原始方法信息
         {
             std::unique_lock<std::shared_mutex> lock(registry_mutex);
             trampoline_registry[method] = {
                 .original_address = address,
-                .replacement = *new_address_ptr,
+                // .replacement = *new_address_ptr,
                 .active = true
             };
         }
@@ -622,8 +672,10 @@ void native_method_bind_callback(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread t
         if ((method_modifiers & JVM_ACC_STATIC) == JVM_ACC_STATIC) {
             *new_address_ptr = reinterpret_cast<void *>(jvmti_tools::encrypt);
         } else {
-            *new_address_ptr = reinterpret_cast<void *>(new_decrypt);
+            *new_address_ptr = reinterpret_cast<void *>(&new_decrypt);
         }
+
+        log->warn("原始地址: {} => 新地址: {}", address, *new_address_ptr);
     }
 }
 
@@ -890,10 +942,6 @@ JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM *vm, char *options, void *reserved)
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
     const auto logger = JvmtiLogger::get();
-    if (logger) {
-        logger->debug("JVMTI Agent unloading...");
-    }
-
     // 执行其他清理操作（如释放 JVM TI 资源）
     const auto addr = reinterpret_cast<uintptr_t>(vm);
     logger->debug("JVMTI Agent Unloaded: 0x{:016X}", addr);
